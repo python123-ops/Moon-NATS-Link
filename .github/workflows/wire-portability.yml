@@ -1,0 +1,22 @@
+name: wire portability
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  wire-portability:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+      - name: Install MoonBit
+        uses: moonbitlang/setup-moonbit@v1
+      - name: Resolve dependencies
+        run: moon update
+      - name: Keep source formatting stable
+        run: moon fmt --check
+      - name: Check the portable wire package
+        run: moon check src/wire --target all --deny-warn
+      - name: Exercise every wire backend
+        run: moon test src/wire --target all --deny-warn

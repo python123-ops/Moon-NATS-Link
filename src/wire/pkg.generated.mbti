@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "python123-ops/moon-nats-link/wire"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn encode_connect(String) -> Bytes
+
+pub fn encode_ping() -> Bytes
+
+pub fn encode_pong() -> Bytes
+
+// Errors
+
+// Types and methods
+pub(all) enum DecodeError {
+  BareLineFeed
+  InvalidCarriageReturn
+  InvalidUtf8
+  UnknownControlLine(String)
+} derive(Eq, @debug.Debug)
+
+pub struct Decoder {
+  mut buffer : Array[Byte]
+}
+pub fn Decoder::buffered_len(Self) -> Int
+pub fn Decoder::feed(Self, BytesView) -> Result[Array[ServerFrame], DecodeError]
+pub fn Decoder::new() -> Self
+
+pub(all) enum ServerFrame {
+  Info(String)
+  Ok
+  Error(String)
+  Ping
+  Pong
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits
