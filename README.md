@@ -2,7 +2,21 @@
 
 Moon NATS Link 是用 MoonBit 编写的 Core NATS 客户端。协议内核把 TCP 分块还原为二进制安全的 `MSG/HMSG`，native 客户端再用一条连接承载发布订阅、队列任务和请求应答。
 
-![从 TCP 分块到类型化请求结果](docs/message-path.svg)
+```mermaid
+flowchart LR
+    App[应用代码] --> API[Client API]
+    API -->|PUB / HPUB / SUB / UNSUB / PING| Writer[Writer 邮箱]
+    Writer --> Server[nats-server]
+    Server -->|INFO / MSG / HMSG / PING / PONG| Reader[Reader]
+    Reader --> Decoder[wire.Decoder]
+    Decoder --> Router[SID 路由]
+    Router --> Sub[订阅邮箱]
+    Router --> Inbox[请求 inbox]
+    Router -->|PONG| Flush[FIFO flush 等待者]
+    Sub --> App
+    Inbox --> App
+    Flush --> API
+```
 
 ## 第一个请求应答
 
