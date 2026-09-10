@@ -1,0 +1,9 @@
+import {
+  "moonbitlang/async",
+  "moonbitlang/core/debug",
+  "python123-ops/moon-nats-link/client",
+}
+
+pkgtype(kind: "executable")
+
+supported_targets = "+native"

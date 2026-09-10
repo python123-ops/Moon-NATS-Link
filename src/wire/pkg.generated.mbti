@@ -12,6 +12,10 @@ pub fn encode_ping() -> Bytes
 
 pub fn encode_pong() -> Bytes
 
+pub fn encode_publish(String, BytesView, reply_to? : String) -> Bytes
+
+pub fn encode_subscribe(String, Int, queue_group? : String) -> Bytes
+
 // Errors
 
 // Types and methods
@@ -20,13 +24,19 @@ pub(all) enum DecodeError {
   InvalidCarriageReturn
   InvalidUtf8
   UnknownControlLine(String)
+  InvalidMessageHeader(String)
+  PayloadTooLarge(Int)
+  InvalidPayloadTerminator
+  TruncatedControlLine(Int)
+  TruncatedPayload(expected~ : Int, actual~ : Int)
 } derive(Eq, @debug.Debug)
 
 pub struct Decoder {
-  mut buffer : Array[Byte]
+  // private fields
 }
 pub fn Decoder::buffered_len(Self) -> Int
 pub fn Decoder::feed(Self, BytesView) -> Result[Array[ServerFrame], DecodeError]
+pub fn Decoder::finish(Self) -> Result[Unit, DecodeError]
 pub fn Decoder::new() -> Self
 
 pub(all) enum ServerFrame {
@@ -35,6 +45,7 @@ pub(all) enum ServerFrame {
   Error(String)
   Ping
   Pong
+  Msg(subject~ : String, sid~ : Int, reply_to~ : String?, payload~ : Bytes)
 } derive(Eq, @debug.Debug)
 
 // Type aliases

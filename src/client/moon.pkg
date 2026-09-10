@@ -1,0 +1,9 @@
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/aqueue",
+  "moonbitlang/async/socket",
+  "moonbitlang/core/debug",
+  "python123-ops/moon-nats-link/wire",
+}
+
+supported_targets = "+native"

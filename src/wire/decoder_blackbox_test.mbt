@@ -6,12 +6,7 @@ test "decode several control lines from one transport chunk" {
       @utf8.encode("INFO {\"server_id\":\"A\"}\r\n+OK\r\nPING\r\nPONG\r\n").view(),
     )
     .unwrap()
-  @debug.assert_eq(frames, [
-    @wire.Info("{\"server_id\":\"A\"}"),
-    @wire.Ok,
-    @wire.Ping,
-    @wire.Pong,
-  ])
+  @debug.assert_eq(frames, [Info("{\"server_id\":\"A\"}"), Ok, Ping, Pong])
   @debug.assert_eq(decoder.buffered_len(), 0)
 }
 
@@ -21,9 +16,7 @@ test "retain a line split between carriage return and line feed" {
   @debug.assert_eq(decoder.feed(@utf8.encode("PI").view()).unwrap(), [])
   @debug.assert_eq(decoder.feed(@utf8.encode("NG\r").view()).unwrap(), [])
   @debug.assert_eq(decoder.buffered_len(), 5)
-  @debug.assert_eq(decoder.feed(@utf8.encode("\n").view()).unwrap(), [
-    @wire.Ping,
-  ])
+  @debug.assert_eq(decoder.feed(@utf8.encode("\n").view()).unwrap(), [Ping])
   @debug.assert_eq(decoder.buffered_len(), 0)
 }
 
@@ -34,7 +27,7 @@ test "accept every split point in an INFO frame" {
     let decoder = @wire.Decoder::new()
     let first = decoder.feed(input[0:split]).unwrap()
     let second = decoder.feed(input[split:]).unwrap()
-    @debug.assert_eq(first + second, [@wire.Info("{\"server_id\":\"split\"}")])
+    @debug.assert_eq(first + second, [Info("{\"server_id\":\"split\"}")])
   }
 }
 
@@ -46,7 +39,7 @@ test "decode a complete frame one byte at a time" {
   for index in 0..<input.length() {
     frames = frames + decoder.feed(input[index:index + 1]).unwrap()
   }
-  @debug.assert_eq(frames, [@wire.Ping])
+  @debug.assert_eq(frames, [Ping])
   @debug.assert_eq(decoder.buffered_len(), 0)
 }
 
@@ -55,7 +48,7 @@ test "reject LF without the protocol carriage return" {
   let decoder = @wire.Decoder::new()
   @debug.assert_eq(
     decoder.feed(@utf8.encode("PING\n").view()),
-    Err(@wire.BareLineFeed),
+    Err(BareLineFeed),
   )
 }
 
@@ -64,7 +57,7 @@ test "reject an unknown server command" {
   let decoder = @wire.Decoder::new()
   @debug.assert_eq(
     decoder.feed(@utf8.encode("WAT\r\n").view()),
-    Err(@wire.UnknownControlLine("WAT")),
+    Err(UnknownControlLine("WAT")),
   )
 }
 
@@ -73,7 +66,7 @@ test "reject a carriage return not followed by line feed" {
   let decoder = @wire.Decoder::new()
   @debug.assert_eq(
     decoder.feed(@utf8.encode("PING\rX").view()),
-    Err(@wire.InvalidCarriageReturn),
+    Err(InvalidCarriageReturn),
   )
 }
 
@@ -81,7 +74,7 @@ test "reject a carriage return not followed by line feed" {
 test "reject non UTF-8 bytes in a control line" {
   let decoder = @wire.Decoder::new()
   let input = Bytes::from_array([0xFF, 0x0D, 0x0A])
-  @debug.assert_eq(decoder.feed(input.view()), Err(@wire.InvalidUtf8))
+  @debug.assert_eq(decoder.feed(input.view()), Err(InvalidUtf8))
 }
 
 ///|

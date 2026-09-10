@@ -14,11 +14,12 @@ async fn accept_frames(
   }
   for frame in frames {
     match frame {
-      @wire.Info(_) => saw_info = true
-      @wire.Pong => saw_pong = true
-      @wire.Ping => connection.write(@wire.encode_pong())
-      @wire.Error(message) => fail("server rejected handshake: \{message}")
-      @wire.Ok => ()
+      Info(_) => saw_info = true
+      Pong => saw_pong = true
+      Ping => connection.write(@wire.encode_pong())
+      Error(message) => fail("server rejected handshake: \{message}")
+      Ok => ()
+      Msg(..) => fail("received MSG during the handshake probe")
     }
   }
   if waiting_for_info && saw_pong {

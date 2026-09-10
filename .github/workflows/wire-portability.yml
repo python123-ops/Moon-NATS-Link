@@ -19,6 +19,6 @@ jobs:
       - name: Keep source formatting stable
         run: moon fmt --check
       - name: Check the portable wire package
-        run: moon check src/wire --target all --deny-warn
+        run: moon check src/wire --target all --deny-warn --warn-list +73
       - name: Exercise every wire backend
-        run: moon test src/wire --target all --deny-warn
+        run: moon test src/wire --target all --deny-warn --warn-list +73
