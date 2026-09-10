@@ -5,8 +5,10 @@ pub(all) suberror ClientError {
   InvalidQueueGroup(String)
   InvalidHeader(String)
   InvalidTimeout(Int)
+  InvalidCredentials(String)
   ProtocolViolation(String)
   ConnectionClosed
+  AuthenticationFailed
   ServerRejected(String)
   NoResponders
   Timeout
@@ -21,19 +23,26 @@ pub struct Options {
   priv server : String
   priv name : String
   priv request_timeout_ms : Int
+  priv auth : @wire.ConnectAuth?
 }
 
 ///|
 /// Create connection options for a single Core NATS server.
+/// `token` is mutually exclusive with `username` and `password`; the latter
+/// must be supplied as a pair. Credential values are never added to `server`.
 pub fn Options::new(
   server? : String = "127.0.0.1:4222",
   name? : String = "moon-nats-link",
   request_timeout_ms? : Int = 2000,
+  token? : String,
+  username? : String,
+  password? : String,
 ) -> Options raise ClientError {
   if request_timeout_ms <= 0 {
     raise InvalidTimeout(request_timeout_ms)
   }
-  { server, name, request_timeout_ms, }
+  let auth = validate_credentials(token, username, password)
+  { server, name, request_timeout_ms, auth, }
 }
 
 ///|

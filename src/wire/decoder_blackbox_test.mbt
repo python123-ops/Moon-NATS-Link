@@ -93,4 +93,29 @@ test "encode handshake commands without line-ending ambiguity" {
       "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"requester\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":true,\"no_responders\":true}\r\n",
     ),
   )
+  @debug.assert_eq(
+    @wire.encode_connect("token-client", auth=Token("token-value")),
+    @utf8.encode(
+      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"token-client\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":false,\"no_responders\":false,\"auth_token\":\"token-value\"}\r\n",
+    ),
+  )
+  @debug.assert_eq(
+    @wire.encode_connect(
+      "user-client",
+      auth=UserPassword(user="service", password="secret"),
+    ),
+    @utf8.encode(
+      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"user-client\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":false,\"no_responders\":false,\"user\":\"service\",\"pass\":\"secret\"}\r\n",
+    ),
+  )
+}
+
+///|
+test "escape CONNECT credential values inside the JSON command" {
+  @debug.assert_eq(
+    @wire.encode_connect("escaped-client", auth=Token("quote\"\\line\r\nPING")),
+    @utf8.encode(
+      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"escaped-client\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":false,\"no_responders\":false,\"auth_token\":\"quote\\\"\\\\line\\r\\nPING\"}\r\n",
+    ),
+  )
 }

@@ -6,7 +6,7 @@ import {
 }
 
 // Values
-pub fn encode_connect(String, headers? : Bool, no_responders? : Bool) -> Bytes
+pub fn encode_connect(String, headers? : Bool, no_responders? : Bool, auth? : ConnectAuth) -> Bytes
 
 pub fn encode_header_publish(String, BytesView, BytesView, reply_to? : String) -> Bytes
 
@@ -23,6 +23,11 @@ pub fn encode_unsubscribe(Int, max_messages? : Int) -> Bytes
 // Errors
 
 // Types and methods
+pub(all) enum ConnectAuth {
+  Token(String)
+  UserPassword(user~ : String, password~ : String)
+}
+
 pub(all) enum DecodeError {
   BareLineFeed
   InvalidCarriageReturn

@@ -64,7 +64,7 @@ queue group ok: one worker claimed task-a
 
 ## 一条连接中发生的事
 
-连接先读取 `INFO`，发出启用 headers 与 No Responders 的 `CONNECT`，再用一次 `PING/PONG` 确认握手写入已经到达服务器。`with_client` 随后启动唯一的 reader 和 writer；发布、订阅、取消与 PONG 响应都经过 writer 邮箱。
+连接先读取 `INFO`，发出启用 headers 与 No Responders 的 `CONNECT`，再用一次 `PING/PONG` 确认握手写入已经到达服务器。token 或用户名/密码由 `Options::new` 单独接收，只进入 CONNECT JSON，不拼进服务器地址；两种认证不能混用，缺少一半用户名密码也会在连接前被拒绝。服务端在握手阶段返回的授权错误会收敛为 `AuthenticationFailed`。`with_client` 随后启动唯一的 reader 和 writer；发布、订阅、取消与 PONG 响应都经过 writer 邮箱。
 
 `wire.Decoder` 在控制行状态和定长 body 状态之间切换。`HMSG` 的 header length 切出完整 `NATS/1.0` header block，total length 决定 payload 终点；消息体不会经过 UTF-8 转换。客户端解析 header 时保留字段大小写、重复值与到达顺序，并拒绝 CRLF 注入或非 ASCII 字段。
 
@@ -94,7 +94,7 @@ moon check src/client --target native --deny-warn --warn-list +73
 moon test src/client --target native --deny-warn --warn-list +73
 ```
 
-2026-09-10 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 21 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 19 个 native 客户端测试。两组测试全部通过。邮箱测试覆盖消息条数、HMSG 字节计数、读取后的配额归还、慢 SID 隔离和 PONG 后的路由清理。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe；连续发布 1025 条未消费消息时也实际得到 `SlowConsumer`，随后另一 SID 仍能收到消息。
+2026-09-11 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 22 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 22 个 native 客户端测试。两组测试全部通过。邮箱测试覆盖消息条数、HMSG 字节计数、读取后的配额归还、慢 SID 隔离和 PONG 后的路由清理；CONNECT 编码测试也覆盖凭据中的引号、反斜线与 CRLF。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe；连续发布 1025 条未消费消息时也实际得到 `SlowConsumer`，随后另一 SID 仍能收到消息。另以两个受保护实例分别验证 token 和用户名/密码：正确凭据完成二进制发布订阅，错误 token 与错误密码均返回 `AuthenticationFailed`。
 
 ## License
 

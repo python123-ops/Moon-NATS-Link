@@ -1,12 +1,17 @@
 ///|
+/// Authentication fields accepted by a Core NATS CONNECT command.
+pub(all) enum ConnectAuth {
+  Token(String)
+  UserPassword(user~ : String, password~ : String)
+}
+
+///|
 /// Encode the CONNECT command used by the initial handshake.
-///
-/// Authentication fields are deliberately absent from this first handshake
-/// shape; callers cannot accidentally interpolate credentials into a URL.
 pub fn encode_connect(
   client_name : String,
   headers? : Bool = false,
   no_responders? : Bool = false,
+  auth? : ConnectAuth,
 ) -> Bytes {
   let body : Json = {
     "verbose": false,
@@ -19,6 +24,15 @@ pub fn encode_connect(
     "echo": true,
     "headers": headers,
     "no_responders": no_responders,
+  }
+  guard body is Object(fields) else { panic() }
+  match auth {
+    None => ()
+    Some(Token(value)) => fields["auth_token"] = Json::string(value)
+    Some(UserPassword(user~, password~)) => {
+      fields["user"] = Json::string(user)
+      fields["pass"] = Json::string(password)
+    }
   }
   @utf8.encode("CONNECT \{body.stringify()}\r\n")
 }

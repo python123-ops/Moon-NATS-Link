@@ -1,6 +1,6 @@
 # 一条连接里的消息时序
 
-连接建立阶段仍然顺序读写：先等待服务器的 `INFO`，随后写入启用 headers 与 No Responders 的 `CONNECT` 和一个 `PING`，直到读到对应的 `PONG` 才把 `Client` 交给调用者。这样后台任务启动时，连接已经越过握手边界，订阅邮箱也不会收到握手前的消息。
+连接建立阶段仍然顺序读写：先等待服务器的 `INFO`，随后写入启用 headers 与 No Responders 的 `CONNECT` 和一个 `PING`，直到读到对应的 `PONG` 才把 `Client` 交给调用者。token 或成对的用户名密码只在这一步写入 CONNECT，不进入服务器地址；授权失败也发生在 `Client` 交付之前。这样后台任务启动时，连接已经越过握手边界，订阅邮箱也不会收到握手前的消息。
 
 握手后，一条连接只有一个 reader 和一个 writer。`publish`、`subscribe` 以及 reader 对服务端 `PING` 的响应都写入 writer 邮箱；发送调用等待该命令完成一次 socket write，因此同一连接上的 `SUB` 会先于紧随其后的 `PUB`。这个完成信号不表示服务端已经处理命令。
 

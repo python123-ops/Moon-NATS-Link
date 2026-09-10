@@ -1,5 +1,8 @@
 ///|
-async fn handshake(connection : @socket.Tcp, name : String) -> @wire.Decoder {
+async fn handshake(
+  connection : @socket.Tcp,
+  options : Options,
+) -> @wire.Decoder {
   let decoder = @wire.Decoder::new()
   let mut received_info = false
   while !received_info {
@@ -22,7 +25,10 @@ async fn handshake(connection : @socket.Tcp, name : String) -> @wire.Decoder {
         }
     }
   }
-  connection.write(@wire.encode_connect(name, headers=true, no_responders=true))
+  let auth = options.auth
+  connection.write(
+    @wire.encode_connect(options.name, headers=true, no_responders=true, auth?),
+  )
   connection.write(@wire.encode_ping())
   let mut received_pong = false
   while !received_pong {
@@ -36,7 +42,7 @@ async fn handshake(connection : @socket.Tcp, name : String) -> @wire.Decoder {
               match frame {
                 Pong => received_pong = true
                 Ping => connection.write(@wire.encode_pong())
-                Error(message) => raise ServerRejected(message)
+                Error(message) => raise handshake_error(message)
                 Info(_) | Ok => ()
                 Msg(..) | HMsg(..) =>
                   raise ProtocolViolation(
@@ -284,7 +290,7 @@ pub async fn[X] with_client(
 ) -> X {
   let connection = @socket.Tcp::connect(@socket.Addr::parse(options.server))
   defer connection.close()
-  let decoder = handshake(connection, options.name)
+  let decoder = handshake(connection, options)
   @async.with_task_group(group => {
     let writer : @aqueue.Queue[WriterCommand] = Queue(kind=Unbounded)
     let client : Client = {
