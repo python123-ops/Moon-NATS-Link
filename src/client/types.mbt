@@ -3,9 +3,15 @@
 pub(all) suberror ClientError {
   InvalidSubject(String)
   InvalidQueueGroup(String)
+  InvalidHeader(String)
+  InvalidTimeout(Int)
   ProtocolViolation(String)
   ConnectionClosed
   ServerRejected(String)
+  NoResponders
+  Timeout
+  SubscriptionClosed
+  InboxEntropyUnavailable
 } derive(Debug)
 
 ///|
@@ -13,6 +19,7 @@ pub(all) suberror ClientError {
 pub struct Options {
   priv server : String
   priv name : String
+  priv request_timeout_ms : Int
 }
 
 ///|
@@ -20,8 +27,12 @@ pub struct Options {
 pub fn Options::new(
   server? : String = "127.0.0.1:4222",
   name? : String = "moon-nats-link",
-) -> Options {
-  { server, name, }
+  request_timeout_ms? : Int = 2000,
+) -> Options raise ClientError {
+  if request_timeout_ms <= 0 {
+    raise InvalidTimeout(request_timeout_ms)
+  }
+  { server, name, request_timeout_ms, }
 }
 
 ///|
@@ -30,12 +41,14 @@ pub fn Options::new(
 pub(all) struct Message {
   subject : String
   reply_to : String?
+  headers : Headers?
   payload : Bytes
 } derive(Eq, Debug)
 
 ///|
 priv enum WriterCommand {
   Write(Bytes, @aqueue.Queue[Unit]?)
+  Flush(@aqueue.Queue[Unit])
 }
 
 ///|
@@ -43,18 +56,19 @@ priv enum WriterCommand {
 pub struct Client {
   priv writer : @aqueue.Queue[WriterCommand]
   priv subscriptions : Map[Int, @aqueue.Queue[Message]]
+  priv flush_waiters : @aqueue.Queue[@aqueue.Queue[Unit]]
+  priv request_timeout_ms : Int
+  priv inbox_prefix : String
   priv mut next_sid : Int
+  priv mut next_request : Int
   priv mut closing : Bool
 }
 
 ///|
 /// A subscription mailbox associated with one server-side SID.
 pub struct Subscription {
+  priv client : Client
+  priv sid : Int
   priv inbox : @aqueue.Queue[Message]
-}
-
-///|
-/// Wait for the next message routed to this subscription.
-pub async fn Subscription::next(self : Subscription) -> Message {
-  self.inbox.get()
+  priv mut closed : Bool
 }

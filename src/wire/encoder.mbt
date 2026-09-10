@@ -3,7 +3,11 @@
 ///
 /// Authentication fields are deliberately absent from this first handshake
 /// shape; callers cannot accidentally interpolate credentials into a URL.
-pub fn encode_connect(client_name : String) -> Bytes {
+pub fn encode_connect(
+  client_name : String,
+  headers? : Bool = false,
+  no_responders? : Bool = false,
+) -> Bytes {
   let body : Json = {
     "verbose": false,
     "pedantic": false,
@@ -13,6 +17,8 @@ pub fn encode_connect(client_name : String) -> Bytes {
     "version": "0.1.0",
     "protocol": 1,
     "echo": true,
+    "headers": headers,
+    "no_responders": no_responders,
   }
   @utf8.encode("CONNECT \{body.stringify()}\r\n")
 }
@@ -55,4 +61,33 @@ pub fn encode_publish(
     Some(reply) => "PUB \{subject} \{reply} \{payload.length()}\r\n"
   }
   @utf8.encode(header) + payload.to_owned() + @utf8.encode("\r\n")
+}
+
+///|
+/// Encode an HPUB command from an already serialized NATS header block.
+pub fn encode_header_publish(
+  subject : String,
+  headers : BytesView,
+  payload : BytesView,
+  reply_to? : String,
+) -> Bytes {
+  let total_len = headers.length() + payload.length()
+  let control = match reply_to {
+    None => "HPUB \{subject} \{headers.length()} \{total_len}\r\n"
+    Some(reply) =>
+      "HPUB \{subject} \{reply} \{headers.length()} \{total_len}\r\n"
+  }
+  @utf8.encode(control) +
+  headers.to_owned() +
+  payload.to_owned() +
+  @utf8.encode("\r\n")
+}
+
+///|
+/// Encode immediate or automatic unsubscription for a server SID.
+pub fn encode_unsubscribe(sid : Int, max_messages? : Int) -> Bytes {
+  match max_messages {
+    None => @utf8.encode("UNSUB \{sid}\r\n")
+    Some(limit) => @utf8.encode("UNSUB \{sid} \{limit}\r\n")
+  }
 }

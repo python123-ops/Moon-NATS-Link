@@ -7,6 +7,13 @@ pub(all) enum ServerFrame {
   Ping
   Pong
   Msg(subject~ : String, sid~ : Int, reply_to~ : String?, payload~ : Bytes)
+  HMsg(
+    subject~ : String,
+    sid~ : Int,
+    reply_to~ : String?,
+    headers~ : Bytes,
+    payload~ : Bytes
+  )
 } derive(Eq, Debug)
 
 ///|
@@ -17,6 +24,7 @@ pub(all) enum DecodeError {
   InvalidUtf8
   UnknownControlLine(String)
   InvalidMessageHeader(String)
+  InvalidHeaderMessageHeader(String)
   PayloadTooLarge(Int)
   InvalidPayloadTerminator
   TruncatedControlLine(Int)
@@ -28,7 +36,8 @@ priv struct PendingMessage {
   subject : String
   sid : Int
   reply_to : String?
-  payload_len : Int
+  header_len : Int?
+  total_len : Int
 }
 
 ///|
@@ -88,6 +97,13 @@ fn invalid_message_header(line : String) -> Result[ParsedLine, DecodeError] {
 }
 
 ///|
+fn invalid_header_message_header(
+  line : String,
+) -> Result[ParsedLine, DecodeError] {
+  Err(InvalidHeaderMessageHeader(line))
+}
+
+///|
 fn parse_msg_header(line : String) -> Result[ParsedLine, DecodeError] {
   let fields = line.split(" ").to_array()
   if fields.length() != 4 && fields.length() != 5 {
@@ -117,7 +133,56 @@ fn parse_msg_header(line : String) -> Result[ParsedLine, DecodeError] {
     None
   }
   Ok(
-    PayloadHeader({ subject: fields[1].to_owned(), sid, reply_to, payload_len, }),
+    PayloadHeader({
+      subject: fields[1].to_owned(),
+      sid,
+      reply_to,
+      header_len: None,
+      total_len: payload_len,
+    }),
+  )
+}
+
+///|
+fn parse_hmsg_header(line : String) -> Result[ParsedLine, DecodeError] {
+  let fields = line.split(" ").to_array()
+  if fields.length() != 5 && fields.length() != 6 {
+    return invalid_header_message_header(line)
+  }
+  for field in fields {
+    if field.is_empty() {
+      return invalid_header_message_header(line)
+    }
+  }
+  let sid = @string.parse_int(fields[2]) catch {
+    _ => return invalid_header_message_header(line)
+  }
+  let header_index = fields.length() - 2
+  let header_len = @string.parse_int(fields[header_index]) catch {
+    _ => return invalid_header_message_header(line)
+  }
+  let total_len = @string.parse_int(fields[header_index + 1]) catch {
+    _ => return invalid_header_message_header(line)
+  }
+  if sid <= 0 || header_len < 0 || total_len < header_len {
+    return invalid_header_message_header(line)
+  }
+  if total_len > 64 * 1024 * 1024 {
+    return Err(PayloadTooLarge(total_len))
+  }
+  let reply_to = if fields.length() == 6 {
+    Some(fields[3].to_owned())
+  } else {
+    None
+  }
+  Ok(
+    PayloadHeader({
+      subject: fields[1].to_owned(),
+      sid,
+      reply_to,
+      header_len: Some(header_len),
+      total_len,
+    }),
   )
 }
 
@@ -137,6 +202,8 @@ fn decode_line(bytes : ArrayView[Byte]) -> Result[ParsedLine, DecodeError] {
         Ok(Complete(Error(line.view(start_offset=5).to_owned())))
       } else if line.has_prefix("MSG ") {
         parse_msg_header(line)
+      } else if line.has_prefix("HMSG ") {
+        parse_hmsg_header(line)
       } else {
         Err(UnknownControlLine(line))
       }
@@ -178,23 +245,42 @@ pub fn Decoder::feed(
         }
       }
       AwaitPayload(pending) => {
-        let required = pending.payload_len + 2
+        let required = pending.total_len + 2
         if self.buffer.length() < required {
           break
         }
-        if self.buffer[pending.payload_len].to_int() != 0x0D ||
-          self.buffer[pending.payload_len + 1].to_int() != 0x0A {
+        if self.buffer[pending.total_len].to_int() != 0x0D ||
+          self.buffer[pending.total_len + 1].to_int() != 0x0A {
           return Err(InvalidPayloadTerminator)
         }
-        let payload = Bytes::from_array(self.buffer[0:pending.payload_len])
-        frames.push(
-          Msg(
-            subject=pending.subject,
-            sid=pending.sid,
-            reply_to=pending.reply_to,
-            payload~,
-          ),
-        )
+        match pending.header_len {
+          None => {
+            let payload = Bytes::from_array(self.buffer[0:pending.total_len])
+            frames.push(
+              Msg(
+                subject=pending.subject,
+                sid=pending.sid,
+                reply_to=pending.reply_to,
+                payload~,
+              ),
+            )
+          }
+          Some(header_len) => {
+            let headers = Bytes::from_array(self.buffer[0:header_len])
+            let payload = Bytes::from_array(
+              self.buffer[header_len:pending.total_len],
+            )
+            frames.push(
+              HMsg(
+                subject=pending.subject,
+                sid=pending.sid,
+                reply_to=pending.reply_to,
+                headers~,
+                payload~,
+              ),
+            )
+          }
+        }
         self.consume(required)
         self.state = AwaitLine
       }
@@ -214,12 +300,12 @@ pub fn Decoder::finish(self : Decoder) -> Result[Unit, DecodeError] {
         Err(TruncatedControlLine(self.buffer.length()))
       }
     AwaitPayload(pending) => {
-      let actual = if self.buffer.length() < pending.payload_len {
+      let actual = if self.buffer.length() < pending.total_len {
         self.buffer.length()
       } else {
-        pending.payload_len
+        pending.total_len
       }
-      Err(TruncatedPayload(expected=pending.payload_len, actual~))
+      Err(TruncatedPayload(expected=pending.total_len, actual~))
     }
   }
 }

@@ -61,3 +61,15 @@ test "queue groups cannot change SUB token boundaries" {
     }
   }
 }
+
+///|
+test "request timeout must be positive" {
+  try Options::new(request_timeout_ms=0) catch {
+    InvalidTimeout(0) => ()
+    _ => fail("expected InvalidTimeout(0)")
+  } noraise {
+    _ => fail("expected invalid request timeout")
+  }
+  let options = Options::new(request_timeout_ms=75)
+  @debug.assert_eq(options.request_timeout_ms, 75)
+}

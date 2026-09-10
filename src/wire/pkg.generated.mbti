@@ -6,7 +6,9 @@ import {
 }
 
 // Values
-pub fn encode_connect(String) -> Bytes
+pub fn encode_connect(String, headers? : Bool, no_responders? : Bool) -> Bytes
+
+pub fn encode_header_publish(String, BytesView, BytesView, reply_to? : String) -> Bytes
 
 pub fn encode_ping() -> Bytes
 
@@ -15,6 +17,8 @@ pub fn encode_pong() -> Bytes
 pub fn encode_publish(String, BytesView, reply_to? : String) -> Bytes
 
 pub fn encode_subscribe(String, Int, queue_group? : String) -> Bytes
+
+pub fn encode_unsubscribe(Int, max_messages? : Int) -> Bytes
 
 // Errors
 
@@ -25,6 +29,7 @@ pub(all) enum DecodeError {
   InvalidUtf8
   UnknownControlLine(String)
   InvalidMessageHeader(String)
+  InvalidHeaderMessageHeader(String)
   PayloadTooLarge(Int)
   InvalidPayloadTerminator
   TruncatedControlLine(Int)
@@ -46,6 +51,7 @@ pub(all) enum ServerFrame {
   Ping
   Pong
   Msg(subject~ : String, sid~ : Int, reply_to~ : String?, payload~ : Bytes)
+  HMsg(subject~ : String, sid~ : Int, reply_to~ : String?, headers~ : Bytes, payload~ : Bytes)
 } derive(Eq, @debug.Debug)
 
 // Type aliases

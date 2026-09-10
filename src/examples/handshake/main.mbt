@@ -19,7 +19,8 @@ async fn accept_frames(
       Ping => connection.write(@wire.encode_pong())
       Error(message) => fail("server rejected handshake: \{message}")
       Ok => ()
-      Msg(..) => fail("received MSG during the handshake probe")
+      Msg(..) | HMsg(..) =>
+        fail("received a message during the handshake probe")
     }
   }
   if waiting_for_info && saw_pong {

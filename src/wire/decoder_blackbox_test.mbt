@@ -84,7 +84,13 @@ test "encode handshake commands without line-ending ambiguity" {
   @debug.assert_eq(
     @wire.encode_connect("moon-nats-link"),
     @utf8.encode(
-      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"moon-nats-link\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true}\r\n",
+      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"moon-nats-link\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":false,\"no_responders\":false}\r\n",
+    ),
+  )
+  @debug.assert_eq(
+    @wire.encode_connect("requester", headers=true, no_responders=true),
+    @utf8.encode(
+      "CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":false,\"name\":\"requester\",\"lang\":\"moonbit\",\"version\":\"0.1.0\",\"protocol\":1,\"echo\":true,\"headers\":true,\"no_responders\":true}\r\n",
     ),
   )
 }

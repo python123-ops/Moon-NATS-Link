@@ -3,6 +3,9 @@ import {
   "moonbitlang/async/aqueue",
   "moonbitlang/async/socket",
   "moonbitlang/core/debug",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/env",
+  "moonbitlang/core/string",
   "python123-ops/moon-nats-link/wire",
 }
 
