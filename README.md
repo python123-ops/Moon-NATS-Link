@@ -68,6 +68,8 @@ queue group ok: one worker claimed task-a
 
 `wire.Decoder` 在控制行状态和定长 body 状态之间切换。`HMSG` 的 header length 切出完整 `NATS/1.0` header block，total length 决定 payload 终点；消息体不会经过 UTF-8 转换。客户端解析 header 时保留字段大小写、重复值与到达顺序，并拒绝 CRLF 注入或非 ASCII 字段。
 
+每个订阅最多积压 1024 条消息或 8 MiB 的消息体；HMSG 的原始 header block 也计入字节上限。超限的 SID 关闭为 `SlowConsumer`，writer 发送 `UNSUB` 并等待后续 `PONG` 再清理路由，其余 SID 不会被这个慢订阅卡住。
+
 `Client::flush` 将等待者排入 FIFO 队列后发送 `PING`。reader 收到相应的 `PONG` 才唤醒等待者，因此 `Subscription::unsubscribe` 可以先发 `UNSUB`，跨过这个服务器处理屏障，再移除本地 SID。屏障前已进入邮箱的消息仍可读取，耗尽后返回 `SubscriptionClosed`。
 
 只观察握手时序可以运行：
@@ -92,7 +94,7 @@ moon check src/client --target native --deny-warn --warn-list +73
 moon test src/client --target native --deny-warn --warn-list +73
 ```
 
-2026-09-10 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 21 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 15 个 native 客户端测试。两组测试全部通过。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe。
+2026-09-10 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 21 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 19 个 native 客户端测试。两组测试全部通过。邮箱测试覆盖消息条数、HMSG 字节计数、读取后的配额归还、慢 SID 隔离和 PONG 后的路由清理。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe；连续发布 1025 条未消费消息时也实际得到 `SlowConsumer`，随后另一 SID 仍能收到消息。
 
 ## License
 

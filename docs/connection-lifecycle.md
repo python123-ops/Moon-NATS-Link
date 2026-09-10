@@ -6,7 +6,7 @@
 
 reader 把每个 socket 分块立即交给 `Decoder`。控制行可以在任意字节处分割；读到 `MSG` 或 `HMSG` 头后，Decoder 改按声明长度等待 body 和结尾 CRLF，不在消息体里搜索分隔符。HMSG 的 header length 与 total length 分别切出原始 header block 和 payload，随后客户端才解释 `NATS/1.0` 状态行与字段。完成的消息按 SID 放入对应订阅邮箱，未知 SID 被视为连接级协议错误。
 
-订阅邮箱当前是无界队列，reader 不会因某个消费任务暂时变慢而阻塞其他 SID。这是当前实现实际采用的背压取舍，并不等同于慢消费者保护。
+每个订阅邮箱最多积压 1024 条消息或 8 MiB 待处理字节；MSG 计 payload，HMSG 计原始 header block 与 payload。reader 只做非阻塞投递，任一上限被下一条消息越过时关闭该邮箱并记录 `SlowConsumer`，已经入队的消息仍可先被取走。writer 随后把该 SID 的 `UNSUB` 和 `PING` 作为一次退休动作发出；对应 `PONG` 到达后才移除 SID，因此屏障前已经在 TCP 流中的消息不会升级成未知 SID 协议错误。处于退休状态的 SID 不再接收新消息，其他订阅继续路由。
 
 主动 flush 不复用普通写入完成信号。它作为一条完整命令进入 writer 邮箱；writer 处理到这条命令时，先把对应等待邮箱排入 FIFO，再立即发送 `PING`。登记与写入不会被另一个 flush 穿插，reader 收到 `PONG` 后只唤醒队首。取消订阅据此执行 `UNSUB → flush → 移除 SID`，所以服务器在处理 UNSUB 前已经发出的消息仍能进入原邮箱。邮箱关闭时不清空缓冲，最后一批消息读完后才返回 `SubscriptionClosed`。
 

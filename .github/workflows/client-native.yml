@@ -1,0 +1,24 @@
+name: client native
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  client-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v7.0.1
+      - name: Install MoonBit from the official CLI distribution
+        run: curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+      - name: Add MoonBit to subsequent steps
+        run: echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Resolve dependencies
+        run: moon update
+      - name: Keep source formatting stable
+        run: moon fmt --check
+      - name: Check the native client package
+        run: moon check src/client --target native --deny-warn --warn-list +73
+      - name: Exercise client state and mailbox behavior
+        run: moon test src/client --target native --deny-warn --warn-list +73

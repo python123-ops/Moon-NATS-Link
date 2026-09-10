@@ -54,7 +54,7 @@ async fn handshake(connection : @socket.Tcp, name : String) -> @wire.Decoder {
 async fn writer_loop(
   connection : @socket.Tcp,
   commands : @aqueue.Queue[WriterCommand],
-  flush_waiters : @aqueue.Queue[@aqueue.Queue[Unit]],
+  pong_actions : @aqueue.Queue[PongAction],
 ) -> Unit {
   for ;; {
     match commands.get() {
@@ -64,8 +64,13 @@ async fn writer_loop(
           done.put(())
         }
       }
-      Flush(waiter) => {
-        flush_waiters.put(waiter)
+      Flush(action) => {
+        pong_actions.put(action)
+        connection.write(@wire.encode_ping())
+      }
+      RetireSlowSubscription(sid) => {
+        connection.write(@wire.encode_unsubscribe(sid))
+        pong_actions.put(ForgetSubscription(sid))
         connection.write(@wire.encode_ping())
       }
     }
@@ -86,25 +91,46 @@ async fn send(client : Client, bytes : Bytes) -> Unit {
 async fn route_frame(client : Client, frame : @wire.ServerFrame) -> Unit {
   match frame {
     Msg(subject~, sid~, reply_to~, payload~) =>
-      route_message(client, subject, sid, reply_to, None, payload)
-    HMsg(subject~, sid~, reply_to~, headers~, payload~) =>
       route_message(
         client,
         subject,
         sid,
         reply_to,
-        Some(decode_headers(headers.view())),
+        None,
         payload,
+        payload.length(),
+      )
+    HMsg(subject~, sid~, reply_to~, headers=raw_headers, payload~) =>
+      route_message(
+        client,
+        subject,
+        sid,
+        reply_to,
+        Some(decode_headers(raw_headers.view())),
+        payload,
+        raw_headers.length() + payload.length(),
       )
     Ping => client.writer.put(Write(@wire.encode_pong(), None))
     Pong =>
-      match client.flush_waiters.try_get() {
+      match client.pong_actions.try_get() {
         None => ()
-        Some(waiter) => waiter.put(())
+        Some(CompleteFlush(waiter)) => waiter.put(())
+        Some(ForgetSubscription(sid)) => client.subscriptions.remove(sid)
       }
     Error(message) => raise ServerRejected(message)
     Info(_) | Ok => ()
   }
+}
+
+///|
+async fn stop_slow_subscription(
+  client : Client,
+  sid : Int,
+  state : SubscriptionState,
+) -> Unit {
+  state.status = OverLimit
+  state.inbox.close(error=SlowConsumer)
+  client.writer.put(RetireSlowSubscription(sid))
 }
 
 ///|
@@ -115,13 +141,34 @@ async fn route_message(
   reply_to : String?,
   headers : Headers?,
   payload : Bytes,
+  wire_bytes : Int,
 ) -> Unit {
   match client.subscriptions.get(sid) {
     None =>
       raise ProtocolViolation(
         "server delivered an unknown subscription id \{sid}",
       )
-    Some(inbox) => inbox.put({ subject, reply_to, headers, payload, })
+    Some(state) =>
+      if state.status is Accepting {
+        let exceeds_messages = state.pending_messages >=
+          client.subscription_message_limit
+        let exceeds_bytes = wire_bytes > client.subscription_byte_limit ||
+          state.pending_bytes > client.subscription_byte_limit - wire_bytes
+        if exceeds_messages || exceeds_bytes {
+          stop_slow_subscription(client, sid, state)
+        } else {
+          let pending : PendingMessage = {
+            message: { subject, reply_to, headers, payload, },
+            wire_bytes,
+          }
+          if state.inbox.try_put(pending) {
+            state.pending_messages += 1
+            state.pending_bytes += wire_bytes
+          } else {
+            stop_slow_subscription(client, sid, state)
+          }
+        }
+      }
   }
 }
 
@@ -191,7 +238,7 @@ pub async fn Client::flush(self : Client) -> Unit {
     raise ConnectionClosed
   }
   let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
-  self.writer.put(Flush(waiter))
+  self.writer.put(Flush(CompleteFlush(waiter)))
   ignore(waiter.get())
 }
 
@@ -211,10 +258,10 @@ pub async fn Client::subscribe(
   }
   let sid = self.next_sid
   self.next_sid = sid + 1
-  let inbox : @aqueue.Queue[Message] = Queue(kind=Unbounded)
-  self.subscriptions[sid] = inbox
+  let state = new_subscription_state(self.subscription_message_limit)
+  self.subscriptions[sid] = state
   send(self, @wire.encode_subscribe(subject, sid, queue_group?))
-  { client: self, sid, inbox, closed: false, }
+  { client: self, sid, state, }
 }
 
 ///|
@@ -243,14 +290,16 @@ pub async fn[X] with_client(
     let client : Client = {
       writer,
       subscriptions: {},
-      flush_waiters: Queue(kind=Unbounded),
+      pong_actions: Queue(kind=Unbounded),
       request_timeout_ms: options.request_timeout_ms,
+      subscription_message_limit: default_subscription_message_limit,
+      subscription_byte_limit: default_subscription_byte_limit,
       inbox_prefix: new_inbox_prefix(),
       next_sid: 1,
       next_request: 1,
       closing: false,
     }
-    group.spawn_bg(() => writer_loop(connection, writer, client.flush_waiters))
+    group.spawn_bg(() => writer_loop(connection, writer, client.pong_actions))
     group.spawn_bg(() => reader_loop(connection, decoder, client))
     errdefer {
       client.closing = true

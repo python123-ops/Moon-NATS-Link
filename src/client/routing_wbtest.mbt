@@ -1,11 +1,16 @@
 ///|
-fn client_for_routing_test() -> Client {
+fn client_for_routing_test(
+  subscription_message_limit? : Int = default_subscription_message_limit,
+  subscription_byte_limit? : Int = default_subscription_byte_limit,
+) -> Client {
   let writer : @aqueue.Queue[WriterCommand] = Queue(kind=Unbounded)
   {
     writer,
     subscriptions: {},
-    flush_waiters: Queue(kind=Unbounded),
+    pong_actions: Queue(kind=Unbounded),
     request_timeout_ms: 20,
+    subscription_message_limit,
+    subscription_byte_limit,
     inbox_prefix: "_INBOX.MOONBIT.test",
     next_sid: 1,
     next_request: 1,
@@ -14,17 +19,23 @@ fn client_for_routing_test() -> Client {
 }
 
 ///|
+fn attach_test_subscription(client : Client, sid : Int) -> Subscription {
+  let state = new_subscription_state(client.subscription_message_limit)
+  client.subscriptions[sid] = state
+  { client, sid, state, }
+}
+
+///|
 async test "route owned binary payload by server SID" {
   let client = client_for_routing_test()
-  let inbox : @aqueue.Queue[Message] = Queue(kind=Unbounded)
-  client.subscriptions[9] = inbox
+  let subscription = attach_test_subscription(client, 9)
   route_frame(
     client,
     Msg(subject="events.binary", sid=9, reply_to=Some("reply.9"), payload=[
       0x00, 0xFF,
     ]),
   )
-  @debug.assert_eq(inbox.get(), {
+  @debug.assert_eq(subscription.next(), {
     subject: "events.binary",
     reply_to: Some("reply.9"),
     headers: None,
@@ -35,8 +46,7 @@ async test "route owned binary payload by server SID" {
 ///|
 async test "route HMSG fields without folding duplicate header names" {
   let client = client_for_routing_test()
-  let inbox : @aqueue.Queue[Message] = Queue(kind=Unbounded)
-  client.subscriptions[4] = inbox
+  let subscription = attach_test_subscription(client, 4)
   route_frame(
     client,
     HMsg(
@@ -49,7 +59,7 @@ async test "route HMSG fields without folding duplicate header names" {
       payload=b"reply",
     ),
   )
-  let message = inbox.get()
+  let message = subscription.next()
   guard message.headers is Some(headers) else {
     fail("expected parsed HMSG headers")
   }
@@ -62,8 +72,8 @@ async test "match PONG to flush waiters in insertion order" {
   let client = client_for_routing_test()
   let first : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
   let second : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
-  client.flush_waiters.put(first)
-  client.flush_waiters.put(second)
+  client.pong_actions.put(CompleteFlush(first))
+  client.pong_actions.put(CompleteFlush(second))
   route_frame(client, Pong)
   @debug.assert_eq(first.try_get(), Some(()))
   @debug.assert_eq(second.try_get(), None)
@@ -78,14 +88,16 @@ async test "flush reaches the writer as one ordered command" {
     let flush_task = group.spawn(() => client.flush())
     match client.writer.get() {
       Write(_, _) => fail("expected an atomic Flush command")
-      Flush(waiter) => {
-        guard client.flush_waiters.try_get() is None else {
+      Flush(CompleteFlush(waiter)) => {
+        guard client.pong_actions.try_get() is None else {
           fail("flush waiter escaped the writer ordering point")
         }
-        client.flush_waiters.put(waiter)
+        client.pong_actions.put(CompleteFlush(waiter))
         route_frame(client, Pong)
         flush_task.wait()
       }
+      Flush(ForgetSubscription(_)) | RetireSlowSubscription(_) =>
+        fail("expected a client flush command")
     }
   })
 }
@@ -93,15 +105,11 @@ async test "flush reaches the writer as one ordered command" {
 ///|
 async test "local subscription close preserves buffered messages" {
   let client = client_for_routing_test()
-  let inbox : @aqueue.Queue[Message] = Queue(kind=Unbounded)
-  client.subscriptions[6] = inbox
-  let subscription : Subscription = { client, sid: 6, inbox, closed: false, }
-  inbox.put({
-    subject: "events.buffered",
-    reply_to: None,
-    headers: None,
-    payload: b"last",
-  })
+  let subscription = attach_test_subscription(client, 6)
+  route_frame(
+    client,
+    Msg(subject="events.buffered", sid=6, reply_to=None, payload=b"last"),
+  )
   subscription.close_local()
   @debug.assert_eq(subscription.next().payload, b"last")
   try subscription.next() catch {

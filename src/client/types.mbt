@@ -10,6 +10,7 @@ pub(all) suberror ClientError {
   ServerRejected(String)
   NoResponders
   Timeout
+  SlowConsumer
   SubscriptionClosed
   InboxEntropyUnavailable
 } derive(Debug)
@@ -48,16 +49,25 @@ pub(all) struct Message {
 ///|
 priv enum WriterCommand {
   Write(Bytes, @aqueue.Queue[Unit]?)
-  Flush(@aqueue.Queue[Unit])
+  Flush(PongAction)
+  RetireSlowSubscription(Int)
+}
+
+///|
+priv enum PongAction {
+  CompleteFlush(@aqueue.Queue[Unit])
+  ForgetSubscription(Int)
 }
 
 ///|
 /// A live native client managed by `with_client`.
 pub struct Client {
   priv writer : @aqueue.Queue[WriterCommand]
-  priv subscriptions : Map[Int, @aqueue.Queue[Message]]
-  priv flush_waiters : @aqueue.Queue[@aqueue.Queue[Unit]]
+  priv subscriptions : Map[Int, SubscriptionState]
+  priv pong_actions : @aqueue.Queue[PongAction]
   priv request_timeout_ms : Int
+  priv subscription_message_limit : Int
+  priv subscription_byte_limit : Int
   priv inbox_prefix : String
   priv mut next_sid : Int
   priv mut next_request : Int
@@ -69,6 +79,5 @@ pub struct Client {
 pub struct Subscription {
   priv client : Client
   priv sid : Int
-  priv inbox : @aqueue.Queue[Message]
-  priv mut closed : Bool
+  priv state : SubscriptionState
 }
