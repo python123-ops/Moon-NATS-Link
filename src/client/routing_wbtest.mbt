@@ -14,7 +14,7 @@ fn client_for_routing_test(
     inbox_prefix: "_INBOX.MOONBIT.test",
     next_sid: 1,
     next_request: 1,
-    closing: false,
+    status: Open,
   }
 }
 
@@ -96,8 +96,11 @@ async test "flush reaches the writer as one ordered command" {
         route_frame(client, Pong)
         flush_task.wait()
       }
-      Flush(ForgetSubscription(_)) | RetireSlowSubscription(_) =>
-        fail("expected a client flush command")
+      Flush(ForgetSubscription(_))
+      | Flush(FinishSubscriptionDrain(_, _))
+      | Unsubscribe(_, _)
+      | DrainSubscription(_, _)
+      | RetireSlowSubscription(_) => fail("expected a client flush command")
     }
   })
 }

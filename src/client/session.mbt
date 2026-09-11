@@ -74,6 +74,17 @@ async fn writer_loop(
         pong_actions.put(action)
         connection.write(@wire.encode_ping())
       }
+      Unsubscribe(sid, written) => {
+        connection.write(@wire.encode_unsubscribe(sid))
+        pong_actions.put(ForgetSubscription(sid))
+        connection.write(@wire.encode_ping())
+        written.put(())
+      }
+      DrainSubscription(sid, state) => {
+        connection.write(@wire.encode_unsubscribe(sid))
+        pong_actions.put(FinishSubscriptionDrain(sid, state))
+        connection.write(@wire.encode_ping())
+      }
       RetireSlowSubscription(sid) => {
         connection.write(@wire.encode_unsubscribe(sid))
         pong_actions.put(ForgetSubscription(sid))
@@ -85,16 +96,41 @@ async fn writer_loop(
 
 ///|
 async fn send(client : Client, bytes : Bytes) -> Unit {
-  if client.closing {
-    raise ConnectionClosed
-  }
   let completion : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
   client.writer.put(Write(bytes, Some(completion)))
   ignore(completion.get())
 }
 
 ///|
+fn ensure_subscription_control_allowed(
+  client : Client,
+) -> Unit raise ClientError {
+  match client.status {
+    Open | DrainingSubscriptions => ()
+    DrainingPublishes | Closed => raise ConnectionClosed
+  }
+}
+
+///|
+fn ensure_publish_allowed(client : Client) -> Unit raise ClientError {
+  match client.status {
+    Open | DrainingSubscriptions => ()
+    DrainingPublishes | Closed => raise ConnectionClosed
+  }
+}
+
+///|
+async fn flush_barrier(client : Client) -> Unit {
+  let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  client.writer.put(Flush(CompleteFlush(waiter)))
+  ignore(waiter.get())
+}
+
+///|
 async fn route_frame(client : Client, frame : @wire.ServerFrame) -> Unit {
+  if client.status is Closed {
+    return
+  }
   match frame {
     Msg(subject~, sid~, reply_to~, payload~) =>
       route_message(
@@ -122,6 +158,8 @@ async fn route_frame(client : Client, frame : @wire.ServerFrame) -> Unit {
         None => ()
         Some(CompleteFlush(waiter)) => waiter.put(())
         Some(ForgetSubscription(sid)) => client.subscriptions.remove(sid)
+        Some(FinishSubscriptionDrain(sid, state)) =>
+          finish_server_drain(client, sid, state)
       }
     Error(message) => raise ServerRejected(message)
     Info(_) | Ok => ()
@@ -136,6 +174,7 @@ async fn stop_slow_subscription(
 ) -> Unit {
   state.status = OverLimit
   state.inbox.close(error=SlowConsumer)
+  fail_drain_waiters(state, SlowConsumer)
   client.writer.put(RetireSlowSubscription(sid))
 }
 
@@ -155,7 +194,7 @@ async fn route_message(
         "server delivered an unknown subscription id \{sid}",
       )
     Some(state) =>
-      if state.status is Accepting {
+      if state.status is (Accepting | DrainingServer) {
         let exceeds_messages = state.pending_messages >=
           client.subscription_message_limit
         let exceeds_bytes = wire_bytes > client.subscription_byte_limit ||
@@ -186,11 +225,11 @@ async fn reader_loop(
 ) -> Unit {
   for ;; {
     let chunk = connection.read_some() catch {
-      error => if client.closing { None } else { raise error }
+      error => if client.status is Closed { None } else { raise error }
     }
     match chunk {
       None => {
-        if client.closing {
+        if client.status is Closed {
           return
         }
         match decoder.finish() {
@@ -219,6 +258,7 @@ pub async fn Client::publish(
   reply_to? : String,
   headers? : Headers,
 ) -> Unit {
+  ensure_publish_allowed(self)
   validate_publish_subject(subject)
   if reply_to is Some(reply) {
     validate_publish_subject(reply)
@@ -240,12 +280,10 @@ pub async fn Client::publish(
 /// Wait until the server has processed every command written before this
 /// call's PING.
 pub async fn Client::flush(self : Client) -> Unit {
-  if self.closing {
-    raise ConnectionClosed
+  match self.status {
+    Open | DrainingSubscriptions => flush_barrier(self)
+    DrainingPublishes | Closed => raise ConnectionClosed
   }
-  let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
-  self.writer.put(Flush(CompleteFlush(waiter)))
-  ignore(waiter.get())
 }
 
 ///|
@@ -255,12 +293,10 @@ pub async fn Client::subscribe(
   subject : String,
   queue_group? : String,
 ) -> Subscription {
+  guard self.status is Open else { raise ConnectionClosed }
   validate_subscription_subject(subject)
   if queue_group is Some(group) {
     validate_queue_group(group)
-  }
-  if self.closing {
-    raise ConnectionClosed
   }
   let sid = self.next_sid
   self.next_sid = sid + 1
@@ -268,6 +304,72 @@ pub async fn Client::subscribe(
   self.subscriptions[sid] = state
   send(self, @wire.encode_subscribe(subject, sid, queue_group?))
   { client: self, sid, state, }
+}
+
+///|
+priv struct DrainTarget {
+  sid : Int
+  state : SubscriptionState
+  waiter : @aqueue.Queue[Unit]
+  send_unsubscribe : Bool
+}
+
+///|
+fn Client::close_local(self : Client) -> Unit {
+  self.status = Closed
+  for _, state in self.subscriptions {
+    match state.status {
+      Accepting | DrainingServer | DrainingBuffered => {
+        state.status = Detached
+        state.inbox.close(error=SubscriptionClosed)
+        fail_drain_waiters(state, ConnectionClosed)
+      }
+      Drained | Detached | OverLimit => ()
+    }
+  }
+  self.subscriptions.clear()
+}
+
+///|
+/// Stop new subscriptions and requests, retain publishes while subscription
+/// mailboxes drain, then cross a final publish barrier. Once this returns, all
+/// client operations fail with `ConnectionClosed`; `with_client` closes the
+/// socket when its callback returns.
+pub async fn Client::drain(self : Client) -> Unit {
+  guard self.status is Open else { raise ConnectionClosed }
+  self.status = DrainingSubscriptions
+  errdefer self.close_local()
+  let targets : Array[DrainTarget] = []
+  for sid, state in self.subscriptions {
+    match state.status {
+      Accepting | DrainingServer | DrainingBuffered => {
+        let (waiter, send_unsubscribe) = begin_subscription_drain(state)
+        targets.push({ sid, state, waiter, send_unsubscribe, })
+      }
+      Drained | Detached | OverLimit => ()
+    }
+  }
+  let mut sent_unsubscribe = false
+  for target in targets {
+    if target.send_unsubscribe {
+      sent_unsubscribe = true
+      self.writer.put(Write(@wire.encode_unsubscribe(target.sid), None))
+    }
+  }
+  if sent_unsubscribe {
+    flush_barrier(self)
+    for target in targets {
+      if target.send_unsubscribe {
+        finish_server_drain(self, target.sid, target.state)
+      }
+    }
+  }
+  for target in targets {
+    ignore(target.waiter.get())
+  }
+  self.status = DrainingPublishes
+  flush_barrier(self)
+  self.status = Closed
 }
 
 ///|
@@ -303,15 +405,13 @@ pub async fn[X] with_client(
       inbox_prefix: new_inbox_prefix(),
       next_sid: 1,
       next_request: 1,
-      closing: false,
+      status: Open,
     }
     group.spawn_bg(() => writer_loop(connection, writer, client.pong_actions))
     group.spawn_bg(() => reader_loop(connection, decoder, client))
-    errdefer {
-      client.closing = true
-    }
+    errdefer client.close_local()
     let result = block(client)
-    client.closing = true
+    client.close_local()
     group.return_immediately(result)
     result
   })

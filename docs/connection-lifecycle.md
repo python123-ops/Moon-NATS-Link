@@ -8,8 +8,12 @@ reader 把每个 socket 分块立即交给 `Decoder`。控制行可以在任意�
 
 每个订阅邮箱最多积压 1024 条消息或 8 MiB 待处理字节；MSG 计 payload，HMSG 计原始 header block 与 payload。reader 只做非阻塞投递，任一上限被下一条消息越过时关闭该邮箱并记录 `SlowConsumer`，已经入队的消息仍可先被取走。writer 随后把该 SID 的 `UNSUB` 和 `PING` 作为一次退休动作发出；对应 `PONG` 到达后才移除 SID，因此屏障前已经在 TCP 流中的消息不会升级成未知 SID 协议错误。处于退休状态的 SID 不再接收新消息，其他订阅继续路由。
 
-主动 flush 不复用普通写入完成信号。它作为一条完整命令进入 writer 邮箱；writer 处理到这条命令时，先把对应等待邮箱排入 FIFO，再立即发送 `PING`。登记与写入不会被另一个 flush 穿插，reader 收到 `PONG` 后只唤醒队首。取消订阅据此执行 `UNSUB → flush → 移除 SID`，所以服务器在处理 UNSUB 前已经发出的消息仍能进入原邮箱。邮箱关闭时不清空缓冲，最后一批消息读完后才返回 `SubscriptionClosed`。
+主动 flush 不复用普通写入完成信号。它作为一条完整命令进入 writer 邮箱；writer 处理到这条命令时，先把对应等待邮箱排入 FIFO，再立即发送 `PING`。登记与写入不会被另一个 flush 穿插，reader 收到 `PONG` 后只唤醒队首。
+
+普通 unsubscribe 与 drain 在这里分开。unsubscribe 先把邮箱标成 `Detached`，不再接纳随后到达的消息，再由一条 writer 命令连续写 `UNSUB`、登记 SID 清理、写 `PING`；PONG 到达前 SID 仍留在 Map 中，因此在途 MSG 不会变成 unknown SID。订阅 drain 使用另一条 writer 命令连续写 `UNSUB`、登记 `FinishSubscriptionDrain`、写 `PING`，状态在此期间是 `DrainingServer`，reader 仍把在途消息放入邮箱。PONG 将 SID 移出 Map、关闭但不清空邮箱；消费者处理最后一条消息后再次调用 `next`，观察到 `SubscriptionClosed` 时所有 drain 等待者才一起完成。协议动作属于 writer/reader，取消某个等待任务不会取消这次收尾。
 
 request 为每次调用建立一个精确 inbox 订阅。inbox 前缀来自 12 个系统随机字节，连接内序号区分后续请求；`UNSUB sid 1` 在带 reply subject 的 PUB 或 HPUB 之前写入。同一条响应路径处理普通 MSG、带 headers 的 HMSG 和服务端 503。等待超过 `Options` 中的毫秒数时，请求先取消 inbox 并跨过 PING/PONG 屏障，再把 `Timeout` 交给调用者。
 
-`with_client` 是连接的所有者。回调正常返回时，它标记连接正在关闭，并让任务组携带回调结果立即收尾；阻塞在 socket read 的 reader 与等待邮箱的 writer 都会收到取消，随后连接句柄关闭。这里执行的是作用域关闭，不发送取消订阅或 drain 命令。
+连接 drain 先把状态切到 `DrainingSubscriptions`，所以新的 SUB 和 request 会失败，但处理已收消息的任务仍可 PUB 回复。它为所有活跃 SID 共享一个服务器屏障，等各消费者观察到邮箱关闭后再切到 `DrainingPublishes`；第二个屏障确认最后的发布已经被服务器处理，此后所有公开操作返回 `ConnectionClosed`。
+
+`with_client` 是连接的所有者。回调正常返回时，它关闭仍存活的订阅邮箱，并让任务组携带回调结果立即收尾；阻塞在 socket read 的 reader 与等待邮箱的 writer 都会收到取消，随后连接句柄关闭。没有显式调用 `Client::drain` 时，这里仍执行作用域关闭，不伪装成一次协议 drain；但逃出回调的订阅句柄也不会再永久阻塞在 `next`。

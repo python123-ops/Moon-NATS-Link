@@ -59,6 +59,8 @@ pub(all) struct Message {
 priv enum WriterCommand {
   Write(Bytes, @aqueue.Queue[Unit]?)
   Flush(PongAction)
+  Unsubscribe(Int, @aqueue.Queue[Unit])
+  DrainSubscription(Int, SubscriptionState)
   RetireSlowSubscription(Int)
 }
 
@@ -66,6 +68,15 @@ priv enum WriterCommand {
 priv enum PongAction {
   CompleteFlush(@aqueue.Queue[Unit])
   ForgetSubscription(Int)
+  FinishSubscriptionDrain(Int, SubscriptionState)
+}
+
+///|
+priv enum ClientStatus {
+  Open
+  DrainingSubscriptions
+  DrainingPublishes
+  Closed
 }
 
 ///|
@@ -80,7 +91,7 @@ pub struct Client {
   priv inbox_prefix : String
   priv mut next_sid : Int
   priv mut next_request : Int
-  priv mut closing : Bool
+  priv mut status : ClientStatus
 }
 
 ///|

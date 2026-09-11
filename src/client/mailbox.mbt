@@ -13,6 +13,9 @@ priv struct PendingMessage {
 ///|
 priv enum SubscriptionStatus {
   Accepting
+  DrainingServer
+  DrainingBuffered
+  Drained
   Detached
   OverLimit
 }
@@ -23,6 +26,7 @@ priv struct SubscriptionState {
   mut pending_messages : Int
   mut pending_bytes : Int
   mut status : SubscriptionStatus
+  drain_waiters : Array[@aqueue.Queue[Unit]]
 }
 
 ///|
@@ -32,5 +36,6 @@ fn new_subscription_state(message_limit : Int) -> SubscriptionState {
     pending_messages: 0,
     pending_bytes: 0,
     status: Accepting,
+    drain_waiters: [],
   }
 }

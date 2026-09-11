@@ -14,6 +14,7 @@ pub async fn Client::request(
   payload : BytesView,
   headers? : Headers,
 ) -> Message {
+  guard self.status is Open else { raise ConnectionClosed }
   validate_publish_subject(subject)
   let reply = self.next_inbox()
   let subscription = self.subscribe(reply)
@@ -26,6 +27,7 @@ pub async fn Client::request(
   ) catch {
     Timeout => {
       subscription.unsubscribe()
+      self.flush()
       raise Timeout
     }
     error => {

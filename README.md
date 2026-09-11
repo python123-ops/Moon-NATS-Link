@@ -70,7 +70,9 @@ queue group ok: one worker claimed task-a
 
 每个订阅最多积压 1024 条消息或 8 MiB 的消息体；HMSG 的原始 header block 也计入字节上限。超限的 SID 关闭为 `SlowConsumer`，writer 发送 `UNSUB` 并等待后续 `PONG` 再清理路由，其余 SID 不会被这个慢订阅卡住。
 
-`Client::flush` 将等待者排入 FIFO 队列后发送 `PING`。reader 收到相应的 `PONG` 才唤醒等待者，因此 `Subscription::unsubscribe` 可以先发 `UNSUB`，跨过这个服务器处理屏障，再移除本地 SID。屏障前已进入邮箱的消息仍可读取，耗尽后返回 `SubscriptionClosed`。
+`Client::flush` 将等待者排入 FIFO 队列后发送 `PING`，reader 收到相应的 `PONG` 才唤醒等待者。普通 `unsubscribe` 在调用时立即关闭本地投递，再由 writer 原子排入 `UNSUB + PING`；SID 暂留在路由表中吸收在途消息，后续 PONG 才把它移除。`Subscription::drain` 在 PONG 前仍接纳消息；消费者处理完最后一条消息，再由下一次 `next` 观察 `SubscriptionClosed` 并完成 drain。两种协议动作都由 writer/reader 持有，即使调用任务被取消也能完成 SID 收尾。
+
+`Client::drain` 先禁止新订阅和 request，批量收束活跃 SID；这个阶段仍允许消费者发布最后的响应。所有消费者观察到邮箱关闭后进入发布收尾，再跨一次 PING/PONG 屏障并关闭所有客户端操作。由于客户端提供的是拉取式邮箱，仍有积压时需要另一个任务持续调用 `Subscription::next`，直到得到 `SubscriptionClosed`。
 
 只观察握手时序可以运行：
 
@@ -94,7 +96,7 @@ moon check src/client --target native --deny-warn --warn-list +73
 moon test src/client --target native --deny-warn --warn-list +73
 ```
 
-2026-09-11 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 22 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 22 个 native 客户端测试。两组测试全部通过。邮箱测试覆盖消息条数、HMSG 字节计数、读取后的配额归还、慢 SID 隔离和 PONG 后的路由清理；CONNECT 编码测试也覆盖凭据中的引号、反斜线与 CRLF。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe；连续发布 1025 条未消费消息时也实际得到 `SlowConsumer`，随后另一 SID 仍能收到消息。另以两个受保护实例分别验证 token 和用户名/密码：正确凭据完成二进制发布订阅，错误 token 与错误密码均返回 `AuthenticationFailed`。
+2026-09-11 使用 MoonBit `0.1.20260904` 在 wasm、wasm-gc、js、native 四个后端分别运行 22 个 `wire` 测试；Ubuntu 24.04 WSL 使用同版工具链运行 28 个 native 客户端测试。两组测试全部通过。邮箱测试覆盖消息条数、HMSG 字节计数、读取后的配额归还、慢 SID 隔离和 PONG 后的路由清理；CONNECT 编码测试也覆盖凭据中的引号、反斜线与 CRLF。客户端连接校验过 SHA-256 的官方 `nats-server v2.14.6` 后，实际完成二进制扇出、队列领取、带 headers 的 request/reply、503 No Responders、超时清理、flush 与 unsubscribe；连续发布 1025 条未消费消息时也实际得到 `SlowConsumer`，随后另一 SID 仍能收到消息。两个受保护实例分别验证过 token 和用户名/密码，正确凭据完成二进制发布订阅，错误 token 与错误密码均返回 `AuthenticationFailed`。drain 探针进一步确认单订阅收尾后连接仍可复用，整连接收尾会交付 PONG 前的最后一条消息并拒绝后续发布。
 
 ## License
 
