@@ -1,12 +1,11 @@
 ///|
-async fn handshake(
-  connection : @socket.Tcp,
-  options : Options,
-) -> @wire.Decoder {
-  let decoder = @wire.Decoder::new()
+async fn[Connection : @io.Reader + @io.Writer] read_server_info(
+  connection : Connection,
+  decoder : @wire.Decoder,
+) -> Unit {
   let mut received_info = false
   while !received_info {
-    match connection.read_some() {
+    match @io.Reader::read_some(connection) {
       None => raise ConnectionClosed
       Some(chunk) =>
         match decoder.feed(chunk) {
@@ -15,7 +14,7 @@ async fn handshake(
             for frame in frames {
               match frame {
                 Info(_) => received_info = true
-                Ping => connection.write(@wire.encode_pong())
+                Ping => @io.Writer::write(connection, @wire.encode_pong())
                 Error(message) => raise ServerRejected(message)
                 Ok | Pong => ()
                 Msg(..) | HMsg(..) =>
@@ -25,14 +24,23 @@ async fn handshake(
         }
     }
   }
+}
+
+///|
+async fn[Connection : @io.Reader + @io.Writer] finish_handshake(
+  connection : Connection,
+  decoder : @wire.Decoder,
+  options : Options,
+) -> Unit {
   let auth = options.auth
-  connection.write(
+  @io.Writer::write(
+    connection,
     @wire.encode_connect(options.name, headers=true, no_responders=true, auth?),
   )
-  connection.write(@wire.encode_ping())
+  @io.Writer::write(connection, @wire.encode_ping())
   let mut received_pong = false
   while !received_pong {
-    match connection.read_some() {
+    match @io.Reader::read_some(connection) {
       None => raise ConnectionClosed
       Some(chunk) =>
         match decoder.feed(chunk) {
@@ -41,7 +49,7 @@ async fn handshake(
             for frame in frames {
               match frame {
                 Pong => received_pong = true
-                Ping => connection.write(@wire.encode_pong())
+                Ping => @io.Writer::write(connection, @wire.encode_pong())
                 Error(message) => raise handshake_error(message)
                 Info(_) | Ok => ()
                 Msg(..) | HMsg(..) =>
@@ -53,12 +61,11 @@ async fn handshake(
         }
     }
   }
-  decoder
 }
 
 ///|
-async fn writer_loop(
-  connection : @socket.Tcp,
+async fn[Connection : @io.Writer] writer_loop(
+  connection : Connection,
   commands : @aqueue.Queue[WriterCommand],
   pong_actions : @aqueue.Queue[PongAction],
 ) -> Unit {
@@ -218,8 +225,8 @@ async fn route_message(
 }
 
 ///|
-async fn reader_loop(
-  connection : @socket.Tcp,
+async fn[Connection : @io.Reader] reader_loop(
+  connection : Connection,
   decoder : @wire.Decoder,
   client : Client,
 ) -> Unit {
@@ -383,16 +390,13 @@ fn new_inbox_prefix() -> String raise ClientError {
 }
 
 ///|
-/// Open one scoped native connection. The callback runs only after INFO,
-/// CONNECT and the initial PING/PONG have completed. Returning from the
-/// callback closes the writer and waits for the reader to terminate.
-pub async fn[X] with_client(
+async fn[X, Connection : @io.Reader + @io.Writer] run_client(
+  connection : Connection,
+  decoder : @wire.Decoder,
   options : Options,
   block : async (Client) -> X,
 ) -> X {
-  let connection = @socket.Tcp::connect(@socket.Addr::parse(options.server))
-  defer connection.close()
-  let decoder = handshake(connection, options)
+  finish_handshake(connection, decoder, options)
   @async.with_task_group(group => {
     let writer : @aqueue.Queue[WriterCommand] = Queue(kind=Unbounded)
     let client : Client = {
@@ -415,4 +419,39 @@ pub async fn[X] with_client(
     group.return_immediately(result)
     result
   })
+}
+
+///|
+/// Open one scoped native connection. The callback runs only after INFO,
+/// CONNECT and the initial PING/PONG have completed. With TLS in traditional
+/// NATS mode, INFO is read before certificate negotiation; TLS-first performs
+/// certificate negotiation before any protocol bytes. Returning from the
+/// callback closes the writer and waits for the reader to terminate.
+pub async fn[X] with_client(
+  options : Options,
+  block : async (Client) -> X,
+) -> X {
+  let connection = @socket.Tcp::connect(@socket.Addr::parse(options.server))
+  defer connection.close()
+  match options.tls {
+    None => {
+      let decoder = @wire.Decoder::new()
+      read_server_info(connection, decoder)
+      run_client(connection, decoder, options, block)
+    }
+    Some(tls_options) =>
+      if tls_options.handshake_first {
+        let secure = open_tls(connection, tls_options)
+        defer secure.close()
+        let decoder = @wire.Decoder::new()
+        read_server_info(secure, decoder)
+        run_client(secure, decoder, options, block)
+      } else {
+        let decoder = @wire.Decoder::new()
+        read_server_info(connection, decoder)
+        let secure = open_tls(connection, tls_options)
+        defer secure.close()
+        run_client(secure, decoder, options, block)
+      }
+  }
 }

@@ -1,7 +1,9 @@
 import {
   "moonbitlang/async",
   "moonbitlang/async/aqueue",
+  "moonbitlang/async/io",
   "moonbitlang/async/socket",
+  "moonbitlang/async/tls",
   "moonbitlang/core/debug",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",

@@ -6,9 +6,11 @@ pub(all) suberror ClientError {
   InvalidHeader(String)
   InvalidTimeout(Int)
   InvalidCredentials(String)
+  InvalidTlsConfiguration(String)
   ProtocolViolation(String)
   ConnectionClosed
   AuthenticationFailed
+  TlsHandshakeFailed(String)
   ServerRejected(String)
   NoResponders
   Timeout
@@ -24,6 +26,7 @@ pub struct Options {
   priv name : String
   priv request_timeout_ms : Int
   priv auth : @wire.ConnectAuth?
+  priv tls : TlsOptions?
 }
 
 ///|
@@ -37,12 +40,13 @@ pub fn Options::new(
   token? : String,
   username? : String,
   password? : String,
+  tls? : TlsOptions,
 ) -> Options raise ClientError {
   if request_timeout_ms <= 0 {
     raise InvalidTimeout(request_timeout_ms)
   }
   let auth = validate_credentials(token, username, password)
-  { server, name, request_timeout_ms, auth, }
+  { server, name, request_timeout_ms, auth, tls, }
 }
 
 ///|
