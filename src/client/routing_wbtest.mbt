@@ -5,6 +5,7 @@ fn client_for_routing_test(
 ) -> Client {
   let writer : @aqueue.Queue[WriterCommand] = Queue(kind=Unbounded)
   {
+    server_pool: { configured: ["127.0.0.1:4222"], discovered: [], },
     writer,
     subscriptions: {},
     pong_actions: Queue(kind=Unbounded),
@@ -41,6 +42,22 @@ async test "route owned binary payload by server SID" {
     headers: None,
     payload: [0x00, 0xFF],
   })
+}
+
+///|
+async test "apply asynchronous INFO topology updates to the connection pool" {
+  let client = client_for_routing_test()
+  route_frame(
+    client,
+    Info("{\"connect_urls\":[\"127.0.0.1:4333\",\"127.0.0.1:4222\"]}"),
+  )
+  @debug.assert_eq(client.server_pool.addresses(), [
+    "127.0.0.1:4222", "127.0.0.1:4333",
+  ])
+  route_frame(client, Info("{\"connect_urls\":[\"127.0.0.1:4555\"]}"))
+  @debug.assert_eq(client.server_pool.addresses(), [
+    "127.0.0.1:4222", "127.0.0.1:4555",
+  ])
 }
 
 ///|

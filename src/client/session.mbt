@@ -2,8 +2,9 @@
 async fn[Connection : @io.Reader + @io.Writer] read_server_info(
   connection : Connection,
   decoder : @wire.Decoder,
-) -> Unit {
+) -> String {
   let mut received_info = false
+  let payload = Ref(None)
   while !received_info {
     match @io.Reader::read_some(connection) {
       None => raise ConnectionClosed
@@ -13,7 +14,10 @@ async fn[Connection : @io.Reader + @io.Writer] read_server_info(
           Ok(frames) =>
             for frame in frames {
               match frame {
-                Info(_) => received_info = true
+                Info(info) => {
+                  received_info = true
+                  payload.val = Some(info)
+                }
                 Ping => @io.Writer::write(connection, @wire.encode_pong())
                 Error(message) => raise ServerRejected(message)
                 Ok | Pong => ()
@@ -23,6 +27,10 @@ async fn[Connection : @io.Reader + @io.Writer] read_server_info(
             }
         }
     }
+  }
+  match payload.val {
+    Some(info) => info
+    None => raise ProtocolViolation("INFO frame was not retained")
   }
 }
 
@@ -169,7 +177,8 @@ async fn route_frame(client : Client, frame : @wire.ServerFrame) -> Unit {
           finish_server_drain(client, sid, state)
       }
     Error(message) => raise ServerRejected(message)
-    Info(_) | Ok => ()
+    Info(payload) => client.server_pool.update_from_info(payload)
+    Ok => ()
   }
 }
 
@@ -400,6 +409,7 @@ async fn[X, Connection : @io.Reader + @io.Writer] run_client(
   @async.with_task_group(group => {
     let writer : @aqueue.Queue[WriterCommand] = Queue(kind=Unbounded)
     let client : Client = {
+      server_pool: options.server_pool,
       writer,
       subscriptions: {},
       pong_actions: Queue(kind=Unbounded),
@@ -432,7 +442,9 @@ async fn[X] with_server(
   match options.tls {
     None => {
       let decoder = @wire.Decoder::new()
-      read_server_info(connection, decoder)
+      options.server_pool.update_from_info(
+        read_server_info(connection, decoder),
+      )
       run_client(connection, decoder, options, block)
     }
     Some(tls_options) =>
@@ -440,11 +452,13 @@ async fn[X] with_server(
         let secure = open_tls(connection, tls_options)
         defer secure.close()
         let decoder = @wire.Decoder::new()
-        read_server_info(secure, decoder)
+        options.server_pool.update_from_info(read_server_info(secure, decoder))
         run_client(secure, decoder, options, block)
       } else {
         let decoder = @wire.Decoder::new()
-        read_server_info(connection, decoder)
+        options.server_pool.update_from_info(
+          read_server_info(connection, decoder),
+        )
         let secure = open_tls(connection, tls_options)
         defer secure.close()
         run_client(secure, decoder, options, block)
@@ -463,7 +477,13 @@ pub async fn[X] with_client(
   block : async (Client) -> X,
 ) -> X {
   let last_error : Ref[Error?] = Ref(None)
-  for server in options.servers {
+  let attempted : Map[String, Unit] = Map([])
+  for ;; {
+    let server = match options.server_pool.next_unattempted(attempted) {
+      None => break
+      Some(address) => address
+    }
+    attempted[server] = ()
     let entered_callback = Ref(false)
     try
       with_server(server, options, client => {

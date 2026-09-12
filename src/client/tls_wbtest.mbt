@@ -45,7 +45,7 @@ test "TLS options reject names and CA paths that cannot be verified" {
 test "connection options carry TLS separately from the server address" {
   let tls = TlsOptions::new("localhost", ca_file="certs/root.pem")
   let options = Options::new(server="127.0.0.1:4443", tls~)
-  @debug.assert_eq(options.servers, ["127.0.0.1:4443"])
+  @debug.assert_eq(options.server_pool.addresses(), ["127.0.0.1:4443"])
   guard options.tls is Some(config) else { fail("expected TLS settings") }
   @debug.assert_eq(config.server_name, "localhost")
 }

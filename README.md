@@ -66,7 +66,7 @@ queue group ok: one worker claimed task-a
 
 连接先读取 `INFO`，发出启用 headers 与 No Responders 的 `CONNECT`，再用一次 `PING/PONG` 确认握手写入已经到达服务器。token 或用户名/密码由 `Options::new` 单独接收，只进入 CONNECT JSON，不拼进服务器地址；两种认证不能混用，缺少一半用户名密码也会在连接前被拒绝。服务端在握手阶段返回的授权错误会收敛为 `AuthenticationFailed`。`with_client` 随后启动唯一的 reader 和 writer；发布、订阅、取消与 PONG 响应都经过 writer 邮箱。
 
-`Options::new(servers=["10.0.0.8:4222", "10.0.0.9:4222"])` 会复制这份地址表，并按给定顺序寻找第一个能完成 INFO、CONNECT 和 PING/PONG 的服务器。回退只发生在 `Client` 交给回调之前；回调已经开始后，无论是业务错误还是连接错误都会直接返回，不会在另一台服务器上重放这段代码。单地址参数 `server` 仍可使用，但不能和 `servers` 同时传入。
+`Options::new(servers=["10.0.0.8:4222", "10.0.0.9:4222"])` 会复制这份地址表，并按给定顺序寻找第一个能完成 INFO、CONNECT 和 PING/PONG 的服务器。服务器通过 `connect_urls` 通告的成员排在这些种子之后；后续 INFO 会替换旧的发现列表，但不会删除调用者配置的地址。回退只发生在 `Client` 交给回调之前；回调已经开始后，无论是业务错误还是连接错误都会直接返回，不会在另一台服务器上重放这段代码。单地址参数 `server` 仍可使用，但不能和 `servers` 同时传入。
 
 TLS 不提供跳过验证的开关。`TlsOptions::new("nats.internal", ca_file="certs/root.pem")` 会以给定名称校验证书，并只信任这份 PEM 中的根；省略 `ca_file` 时使用系统根证书。默认保持 NATS 的 INFO-first 升级顺序，连接 `handshake_first: true` 的服务器时显式传入同名选项。TCP 地址、证书名称和信任根分别保存，认证信息不会借 TLS 配置回到地址字符串。
 
@@ -105,6 +105,8 @@ moon test src/client --target native --deny-warn --warn-list +73
 2026-09-12 新增的 3 个 TLS 选项测试使 native 客户端测试增至 31 个。使用同一份校验过 SHA-256 的 `nats-server v2.14.6` 发布包生成一张带 `localhost` SAN 的临时自签证书，并把它作为自定义信任根后，INFO-first 与 TLS-first 两种服务端配置都完成了 `00 0d 0a ff` 发布订阅；把校验名称改为 `wrong.example` 时，握手被拒绝并返回 `TlsHandshakeFailed`。
 
 同日加入服务器池输入与复制语义测试后，native 客户端测试为 34 个。真实连接探针把未监听的 `127.0.0.1:4333` 放在首位、`nats-server v2.14.6` 放在第二位，二进制消息仍完成往返；把可用服务器放在首位并让回调主动失败时，回调计数保持为 1，原错误没有被第二次连接覆盖。
+
+继续处理 INFO 拓扑更新后，native 客户端测试增至 38 个。两个 `nats-server v2.14.6` 实例在 Ubuntu 24.04 WSL 中组成路由集群，客户端只配置 `127.0.0.1:14222`，握手后地址表实际得到服务器通告的 `127.0.0.1:14333`；测试结束后两台服务均停止且端口释放。
 
 ## License
 

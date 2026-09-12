@@ -23,7 +23,7 @@ pub(all) suberror ClientError {
 ///|
 /// Connection values used by `with_client` in the current native client.
 pub struct Options {
-  priv servers : Array[String]
+  priv server_pool : ServerPool
   priv name : String
   priv request_timeout_ms : Int
   priv auth : @wire.ConnectAuth?
@@ -48,9 +48,9 @@ pub fn Options::new(
   if request_timeout_ms <= 0 {
     raise InvalidTimeout(request_timeout_ms)
   }
-  let servers = normalize_servers(server, servers)
+  let server_pool = ServerPool::new(server, servers)
   let auth = validate_credentials(token, username, password)
-  { servers, name, request_timeout_ms, auth, tls, }
+  { server_pool, name, request_timeout_ms, auth, tls, }
 }
 
 ///|
@@ -90,6 +90,7 @@ priv enum ClientStatus {
 ///|
 /// A live native client managed by `with_client`.
 pub struct Client {
+  priv server_pool : ServerPool
   priv writer : @aqueue.Queue[WriterCommand]
   priv subscriptions : Map[Int, SubscriptionState]
   priv pong_actions : @aqueue.Queue[PongAction]
