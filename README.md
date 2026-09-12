@@ -68,6 +68,8 @@ queue group ok: one worker claimed task-a
 
 `Options::new(servers=["10.0.0.8:4222", "10.0.0.9:4222"])` 会复制这份地址表，并按给定顺序寻找第一个能完成 INFO、CONNECT 和 PING/PONG 的服务器。服务器通过 `connect_urls` 通告的成员排在这些种子之后；后续 INFO 会替换旧的发现列表，但不会删除调用者配置的地址。回退只发生在 `Client` 交给回调之前；回调已经开始后，无论是业务错误还是连接错误都会直接返回，不会在另一台服务器上重放这段代码。单地址参数 `server` 仍可使用，但不能和 `servers` 同时传入。
 
+socket EOF 或 writer 失败会先把连接切到 `Disconnected`。已经等待 writer 或 PONG 的调用会同时被唤醒；这个间隔内新发起的 publish、subscribe、request、flush 和 drain 不进入旧 writer 邮箱。普通订阅保留用于恢复，尚未完成的 request inbox 与正在 drain 的 SID 则直接结束，避免换连接后重放一次语义不明的请求。本版仍会在这一步结束 `with_client` 作用域，尚未启动新的 TCP 连接。
+
 TLS 不提供跳过验证的开关。`TlsOptions::new("nats.internal", ca_file="certs/root.pem")` 会以给定名称校验证书，并只信任这份 PEM 中的根；省略 `ca_file` 时使用系统根证书。默认保持 NATS 的 INFO-first 升级顺序，连接 `handshake_first: true` 的服务器时显式传入同名选项。TCP 地址、证书名称和信任根分别保存，认证信息不会借 TLS 配置回到地址字符串。
 
 `wire.Decoder` 在控制行状态和定长 body 状态之间切换。`HMSG` 的 header length 切出完整 `NATS/1.0` header block，total length 决定 payload 终点；消息体不会经过 UTF-8 转换。客户端解析 header 时保留字段大小写、重复值与到达顺序，并拒绝 CRLF 注入或非 ASCII 字段。
@@ -109,6 +111,8 @@ moon test src/client --target native --deny-warn --warn-list +73
 继续处理 INFO 拓扑更新后，native 客户端测试增至 38 个。两个 `nats-server v2.14.6` 实例在 Ubuntu 24.04 WSL 中组成路由集群，客户端只配置 `127.0.0.1:14222`，握手后地址表实际得到服务器通告的 `127.0.0.1:14333`；测试结束后两台服务均停止且端口释放。
 
 订阅安装改由单条 writer 命令持有后，native 客户端测试增至 42 个；记录型 writer 测试观察到 request inbox 的 SUB 与 `UNSUB sid 1` 相邻写出，订阅状态测试确认 drain 中或已超限的 SID 不会生成恢复命令。随后在 Ubuntu 24.04 WSL 启动校验过 SHA-256 的 `nats-server v2.14.6`，请求应答示例再次完成 headers、503 No Responders 与 timeout 三条路径。
+
+断线边界加入 6 个 native 测试后，客户端测试为 48 个。测试覆盖未完成 publish 的唤醒、writer 写失败、普通订阅与 request inbox 的分流、重连间隔拒绝新命令、订阅 drain 被断线中止，以及尚未写完 SUB 的 SID 清理；六条路径均返回各自的确定结果，没有把命令或无句柄 SID 留给失去消费者的 writer 邮箱。
 
 ## License
 

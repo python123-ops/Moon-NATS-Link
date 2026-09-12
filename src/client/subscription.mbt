@@ -38,7 +38,7 @@ fn begin_subscription_drain(
   state : SubscriptionState,
 ) -> (@aqueue.Queue[Unit], Bool) raise ClientError {
   match state.status {
-    Accepting => {
+    Installing | Accepting => {
       state.status = DrainingServer
       let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
       state.drain_waiters.push(waiter)
@@ -71,6 +71,11 @@ async fn finish_server_drain(
 ///|
 fn Subscription::close_local(self : Subscription) -> Unit {
   match self.state.status {
+    Installing => {
+      self.state.status = Detached
+      self.client.subscriptions.remove(self.sid)
+      self.state.inbox.close(error=SubscriptionClosed)
+    }
     Accepting => {
       self.state.status = Detached
       self.client.subscriptions.remove(self.sid)
@@ -92,6 +97,7 @@ fn Subscription::close_local(self : Subscription) -> Unit {
 pub async fn Subscription::unsubscribe(self : Subscription) -> Unit {
   ensure_subscription_control_allowed(self.client)
   match self.state.status {
+    Installing => raise SubscriptionClosed
     OverLimit => raise SlowConsumer
     Drained | Detached | DrainingServer | DrainingBuffered =>
       raise SubscriptionClosed
@@ -99,7 +105,8 @@ pub async fn Subscription::unsubscribe(self : Subscription) -> Unit {
   }
   self.state.status = Detached
   self.state.inbox.close(error=SubscriptionClosed)
-  let written : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  let (waiter_id, written) = self.client.new_connection_waiter()
+  defer self.client.connection_waiters.remove(waiter_id)
   self.client.writer.put(Unsubscribe(self.sid, written))
   ignore(written.get())
 }

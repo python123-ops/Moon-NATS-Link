@@ -86,8 +86,11 @@ async fn[Connection : @io.Writer] writer_loop(
         }
       }
       Subscribe(sid, state, written) => {
-        for bytes in state.replay_commands(sid) {
+        for bytes in state.connection_commands(sid, replay=false) {
           connection.write(bytes)
+        }
+        if state.status is Installing {
+          state.status = Accepting
         }
         written.put(())
       }
@@ -116,10 +119,62 @@ async fn[Connection : @io.Writer] writer_loop(
 }
 
 ///|
+async fn[Connection : @io.Writer] connection_writer_loop(
+  connection : Connection,
+  client : Client,
+) -> Unit {
+  errdefer client.mark_disconnected()
+  writer_loop(connection, client.writer, client.pong_actions)
+}
+
+///|
 async fn send(client : Client, bytes : Bytes) -> Unit {
-  let completion : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  let (waiter_id, completion) = client.new_connection_waiter()
+  defer client.connection_waiters.remove(waiter_id)
   client.writer.put(Write(bytes, Some(completion)))
   ignore(completion.get())
+}
+
+///|
+fn Client::new_connection_waiter(self : Client) -> (Int, @aqueue.Queue[Unit]) {
+  let waiter_id = self.next_connection_waiter
+  self.next_connection_waiter = waiter_id + 1
+  let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  self.connection_waiters[waiter_id] = waiter
+  (waiter_id, waiter)
+}
+
+///|
+fn Client::fail_connection_waiters(self : Client, error : Error) -> Unit {
+  for _, waiter in self.connection_waiters {
+    waiter.close(error~)
+  }
+  self.connection_waiters.clear()
+}
+
+///|
+fn Client::mark_disconnected(self : Client) -> Unit {
+  guard self.status is Open else { return }
+  self.status = Reconnecting
+  self.fail_connection_waiters(Disconnected)
+  let discarded = []
+  for sid, state in self.subscriptions {
+    if state.intent.recover_on_reconnect && state.status is Accepting {
+      continue
+    }
+    match state.status {
+      Installing | Accepting | DrainingServer | DrainingBuffered => {
+        state.status = Detached
+        state.inbox.close(error=Disconnected)
+        fail_drain_waiters(state, Disconnected)
+      }
+      Drained | Detached | OverLimit => ()
+    }
+    discarded.push(sid)
+  }
+  for sid in discarded {
+    self.subscriptions.remove(sid)
+  }
 }
 
 ///|
@@ -128,6 +183,7 @@ fn ensure_subscription_control_allowed(
 ) -> Unit raise ClientError {
   match client.status {
     Open | DrainingSubscriptions => ()
+    Reconnecting => raise Disconnected
     DrainingPublishes | Closed => raise ConnectionClosed
   }
 }
@@ -136,13 +192,15 @@ fn ensure_subscription_control_allowed(
 fn ensure_publish_allowed(client : Client) -> Unit raise ClientError {
   match client.status {
     Open | DrainingSubscriptions => ()
+    Reconnecting => raise Disconnected
     DrainingPublishes | Closed => raise ConnectionClosed
   }
 }
 
 ///|
 async fn flush_barrier(client : Client) -> Unit {
-  let waiter : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  let (waiter_id, waiter) = client.new_connection_waiter()
+  defer client.connection_waiters.remove(waiter_id)
   client.writer.put(Flush(CompleteFlush(waiter)))
   ignore(waiter.get())
 }
@@ -216,7 +274,7 @@ async fn route_message(
         "server delivered an unknown subscription id \{sid}",
       )
     Some(state) =>
-      if state.status is (Accepting | DrainingServer) {
+      if state.status is (Installing | Accepting | DrainingServer) {
         let exceeds_messages = state.pending_messages >=
           client.subscription_message_limit
         let exceeds_bytes = wire_bytes > client.subscription_byte_limit ||
@@ -247,7 +305,13 @@ async fn[Connection : @io.Reader] reader_loop(
 ) -> Unit {
   for ;; {
     let chunk = connection.read_some() catch {
-      error => if client.status is Closed { None } else { raise error }
+      error =>
+        if client.status is Closed {
+          None
+        } else {
+          client.mark_disconnected()
+          raise error
+        }
     }
     match chunk {
       None => {
@@ -256,7 +320,10 @@ async fn[Connection : @io.Reader] reader_loop(
         }
         match decoder.finish() {
           Err(error) => raise ProtocolViolation(@debug.to_string(error))
-          Ok(_) => raise ConnectionClosed
+          Ok(_) => {
+            client.mark_disconnected()
+            raise Disconnected
+          }
         }
       }
       Some(bytes) =>
@@ -277,20 +344,34 @@ async fn Client::install_subscription(
   subject : String,
   queue_group? : String,
   max_messages? : Int,
+  recover_on_reconnect? : Bool = true,
 ) -> Subscription {
-  guard self.status is Open else { raise ConnectionClosed }
+  match self.status {
+    Open => ()
+    Reconnecting => raise Disconnected
+    DrainingSubscriptions | DrainingPublishes | Closed => raise ConnectionClosed
+  }
   validate_subscription_subject(subject)
   if queue_group is Some(group) {
     validate_queue_group(group)
   }
   let sid = self.next_sid
   self.next_sid = sid + 1
-  let intent = { subject, queue_group, max_messages, }
+  let intent = { subject, queue_group, max_messages, recover_on_reconnect, }
   let state = new_subscription_state(self.subscription_message_limit, intent)
+  state.status = Installing
   self.subscriptions[sid] = state
-  let written : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  let (waiter_id, written) = self.new_connection_waiter()
+  defer self.connection_waiters.remove(waiter_id)
   self.writer.put(Subscribe(sid, state, written))
   ignore(written.get())
+  if !(state.status is Accepting) {
+    match self.status {
+      Reconnecting => raise Disconnected
+      Open | DrainingSubscriptions | DrainingPublishes | Closed =>
+        raise ConnectionClosed
+    }
+  }
   { client: self, sid, state, }
 }
 
@@ -327,6 +408,7 @@ pub async fn Client::publish(
 pub async fn Client::flush(self : Client) -> Unit {
   match self.status {
     Open | DrainingSubscriptions => flush_barrier(self)
+    Reconnecting => raise Disconnected
     DrainingPublishes | Closed => raise ConnectionClosed
   }
 }
@@ -352,9 +434,10 @@ priv struct DrainTarget {
 ///|
 fn Client::close_local(self : Client) -> Unit {
   self.status = Closed
+  self.fail_connection_waiters(ConnectionClosed)
   for _, state in self.subscriptions {
     match state.status {
-      Accepting | DrainingServer | DrainingBuffered => {
+      Installing | Accepting | DrainingServer | DrainingBuffered => {
         state.status = Detached
         state.inbox.close(error=SubscriptionClosed)
         fail_drain_waiters(state, ConnectionClosed)
@@ -371,13 +454,17 @@ fn Client::close_local(self : Client) -> Unit {
 /// client operations fail with `ConnectionClosed`; `with_client` closes the
 /// socket when its callback returns.
 pub async fn Client::drain(self : Client) -> Unit {
-  guard self.status is Open else { raise ConnectionClosed }
+  match self.status {
+    Open => ()
+    Reconnecting => raise Disconnected
+    DrainingSubscriptions | DrainingPublishes | Closed => raise ConnectionClosed
+  }
   self.status = DrainingSubscriptions
   errdefer self.close_local()
   let targets : Array[DrainTarget] = []
   for sid, state in self.subscriptions {
     match state.status {
-      Accepting | DrainingServer | DrainingBuffered => {
+      Installing | Accepting | DrainingServer | DrainingBuffered => {
         let (waiter, send_unsubscribe) = begin_subscription_drain(state)
         targets.push({ sid, state, waiter, send_unsubscribe, })
       }
@@ -430,17 +517,19 @@ async fn[X, Connection : @io.Reader + @io.Writer] run_client(
     let client : Client = {
       server_pool: options.server_pool,
       writer,
+      connection_waiters: {},
       subscriptions: {},
       pong_actions: Queue(kind=Unbounded),
       request_timeout_ms: options.request_timeout_ms,
       subscription_message_limit: default_subscription_message_limit,
       subscription_byte_limit: default_subscription_byte_limit,
       inbox_prefix: new_inbox_prefix(),
+      next_connection_waiter: 1,
       next_sid: 1,
       next_request: 1,
       status: Open,
     }
-    group.spawn_bg(() => writer_loop(connection, writer, client.pong_actions))
+    group.spawn_bg(() => connection_writer_loop(connection, client))
     group.spawn_bg(() => reader_loop(connection, decoder, client))
     errdefer client.close_local()
     let result = block(client)

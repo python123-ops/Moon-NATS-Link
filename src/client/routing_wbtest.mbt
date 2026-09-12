@@ -7,12 +7,14 @@ fn client_for_routing_test(
   {
     server_pool: { configured: ["127.0.0.1:4222"], discovered: [], },
     writer,
+    connection_waiters: {},
     subscriptions: {},
     pong_actions: Queue(kind=Unbounded),
     request_timeout_ms: 20,
     subscription_message_limit,
     subscription_byte_limit,
     inbox_prefix: "_INBOX.MOONBIT.test",
+    next_connection_waiter: 1,
     next_sid: 1,
     next_request: 1,
     status: Open,
@@ -25,6 +27,7 @@ fn attach_test_subscription(client : Client, sid : Int) -> Subscription {
     subject: "test.\{sid}",
     queue_group: None,
     max_messages: None,
+    recover_on_reconnect: true,
   })
   client.subscriptions[sid] = state
   { client, sid, state, }

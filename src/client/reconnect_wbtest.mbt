@@ -2,7 +2,7 @@
 fn replay_commands_for_test(client : Client) -> Array[Bytes] {
   let commands = []
   for sid, state in client.subscriptions {
-    for bytes in state.replay_commands(sid) {
+    for bytes in state.connection_commands(sid, replay=true) {
       commands.push(bytes)
     }
   }
@@ -38,6 +38,7 @@ async test "writer owns the complete queue subscription installation" {
         @debug.assert_eq(intent.subject, "jobs.build")
         @debug.assert_eq(intent.queue_group, Some("workers"))
         @debug.assert_eq(intent.max_messages, None)
+        state.status = Accepting
         written.put(())
       }
       _ => fail("expected one writer-owned subscription command")
@@ -56,7 +57,9 @@ async test "writer keeps request SUB and auto-unsubscribe adjacent" {
     subject: "_INBOX.MOONBIT.test.7",
     queue_group: None,
     max_messages: Some(1),
+    recover_on_reconnect: false,
   })
+  state.status = Installing
   let written : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
   @async.with_task_group(group => {
     let writer = group.spawn(() => {
@@ -64,6 +67,9 @@ async test "writer keeps request SUB and auto-unsubscribe adjacent" {
     })
     commands.put(Subscribe(7, state, written))
     ignore(written.get())
+    guard state.status is Accepting else {
+      fail("expected the writer to finish subscription installation")
+    }
     @debug.assert_eq(connection.writes, [
       @wire.encode_subscribe("_INBOX.MOONBIT.test.7", 7),
       @wire.encode_unsubscribe(7, max_messages=1),
@@ -90,6 +96,7 @@ async test "request inbox installation retains its one message ceiling" {
         @debug.assert_eq(intent.subject, "_INBOX.MOONBIT.test.1")
         @debug.assert_eq(intent.queue_group, None)
         @debug.assert_eq(intent.max_messages, Some(1))
+        state.status = Accepting
         written.put(())
       }
       _ => fail("expected one writer-owned inbox command")
@@ -105,22 +112,26 @@ test "replay includes only subscriptions still accepting delivery" {
     subject: "events.live",
     queue_group: Some("workers"),
     max_messages: None,
+    recover_on_reconnect: true,
   })
   let inbox = new_subscription_state(8, {
     subject: "_INBOX.MOONBIT.test.2",
     queue_group: None,
     max_messages: Some(1),
+    recover_on_reconnect: false,
   })
   let draining = new_subscription_state(8, {
     subject: "events.retiring",
     queue_group: None,
     max_messages: None,
+    recover_on_reconnect: true,
   })
   draining.status = DrainingServer
   let slow = new_subscription_state(8, {
     subject: "events.slow",
     queue_group: None,
     max_messages: None,
+    recover_on_reconnect: true,
   })
   slow.status = OverLimit
   client.subscriptions[3] = active
@@ -129,7 +140,5 @@ test "replay includes only subscriptions still accepting delivery" {
   client.subscriptions[6] = slow
   @debug.assert_eq(replay_commands_for_test(client), [
     @wire.encode_subscribe("events.live", 3, queue_group="workers"),
-    @wire.encode_subscribe("_INBOX.MOONBIT.test.2", 4),
-    @wire.encode_unsubscribe(4, max_messages=1),
   ])
 }

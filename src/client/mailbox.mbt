@@ -12,6 +12,7 @@ priv struct PendingMessage {
 
 ///|
 priv enum SubscriptionStatus {
+  Installing
   Accepting
   DrainingServer
   DrainingBuffered
@@ -25,14 +26,22 @@ priv struct SubscriptionIntent {
   subject : String
   queue_group : String?
   max_messages : Int?
+  recover_on_reconnect : Bool
 }
 
 ///|
-fn SubscriptionState::replay_commands(
+fn SubscriptionState::connection_commands(
   self : SubscriptionState,
   sid : Int,
+  replay~ : Bool,
 ) -> Array[Bytes] {
-  guard self.status is Accepting else { return [] }
+  let eligible = match (self.status, replay) {
+    (Installing, false) => true
+    (Accepting, false) => true
+    (Accepting, true) => self.intent.recover_on_reconnect
+    _ => false
+  }
+  guard eligible else { return [] }
   let queue_group = self.intent.queue_group
   let commands = [
     @wire.encode_subscribe(self.intent.subject, sid, queue_group?),

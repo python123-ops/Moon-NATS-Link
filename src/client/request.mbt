@@ -14,10 +14,18 @@ pub async fn Client::request(
   payload : BytesView,
   headers? : Headers,
 ) -> Message {
-  guard self.status is Open else { raise ConnectionClosed }
+  match self.status {
+    Open => ()
+    Reconnecting => raise Disconnected
+    DrainingSubscriptions | DrainingPublishes | Closed => raise ConnectionClosed
+  }
   validate_publish_subject(subject)
   let reply = self.next_inbox()
-  let subscription = self.install_subscription(reply, max_messages=1)
+  let subscription = self.install_subscription(
+    reply,
+    max_messages=1,
+    recover_on_reconnect=false,
+  )
   self.publish(subject, payload, reply_to=reply, headers?)
   let response = @async.with_timeout(
     self.request_timeout_ms,

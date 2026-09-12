@@ -9,6 +9,7 @@ pub(all) suberror ClientError {
   InvalidServerList(String)
   InvalidTlsConfiguration(String)
   ProtocolViolation(String)
+  Disconnected
   ConnectionClosed
   AuthenticationFailed
   TlsHandshakeFailed(String)
@@ -83,6 +84,7 @@ priv enum PongAction {
 ///|
 priv enum ClientStatus {
   Open
+  Reconnecting
   DrainingSubscriptions
   DrainingPublishes
   Closed
@@ -93,12 +95,14 @@ priv enum ClientStatus {
 pub struct Client {
   priv server_pool : ServerPool
   priv writer : @aqueue.Queue[WriterCommand]
+  priv connection_waiters : Map[Int, @aqueue.Queue[Unit]]
   priv subscriptions : Map[Int, SubscriptionState]
   priv pong_actions : @aqueue.Queue[PongAction]
   priv request_timeout_ms : Int
   priv subscription_message_limit : Int
   priv subscription_byte_limit : Int
   priv inbox_prefix : String
+  priv mut next_connection_waiter : Int
   priv mut next_sid : Int
   priv mut next_request : Int
   priv mut status : ClientStatus
