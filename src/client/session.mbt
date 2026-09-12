@@ -85,6 +85,12 @@ async fn[Connection : @io.Writer] writer_loop(
           done.put(())
         }
       }
+      Subscribe(sid, state, written) => {
+        for bytes in state.replay_commands(sid) {
+          connection.write(bytes)
+        }
+        written.put(())
+      }
       Flush(action) => {
         pong_actions.put(action)
         connection.write(@wire.encode_ping())
@@ -266,6 +272,29 @@ async fn[Connection : @io.Reader] reader_loop(
 }
 
 ///|
+async fn Client::install_subscription(
+  self : Client,
+  subject : String,
+  queue_group? : String,
+  max_messages? : Int,
+) -> Subscription {
+  guard self.status is Open else { raise ConnectionClosed }
+  validate_subscription_subject(subject)
+  if queue_group is Some(group) {
+    validate_queue_group(group)
+  }
+  let sid = self.next_sid
+  self.next_sid = sid + 1
+  let intent = { subject, queue_group, max_messages, }
+  let state = new_subscription_state(self.subscription_message_limit, intent)
+  self.subscriptions[sid] = state
+  let written : @aqueue.Queue[Unit] = Queue(kind=Blocking(1))
+  self.writer.put(Subscribe(sid, state, written))
+  ignore(written.get())
+  { client: self, sid, state, }
+}
+
+///|
 /// Publish raw bytes to a concrete subject.
 pub async fn Client::publish(
   self : Client,
@@ -309,17 +338,7 @@ pub async fn Client::subscribe(
   subject : String,
   queue_group? : String,
 ) -> Subscription {
-  guard self.status is Open else { raise ConnectionClosed }
-  validate_subscription_subject(subject)
-  if queue_group is Some(group) {
-    validate_queue_group(group)
-  }
-  let sid = self.next_sid
-  self.next_sid = sid + 1
-  let state = new_subscription_state(self.subscription_message_limit)
-  self.subscriptions[sid] = state
-  send(self, @wire.encode_subscribe(subject, sid, queue_group?))
-  { client: self, sid, state, }
+  self.install_subscription(subject, queue_group?)
 }
 
 ///|

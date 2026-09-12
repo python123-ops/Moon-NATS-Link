@@ -66,6 +66,7 @@ pub(all) struct Message {
 ///|
 priv enum WriterCommand {
   Write(Bytes, @aqueue.Queue[Unit]?)
+  Subscribe(Int, SubscriptionState, @aqueue.Queue[Unit])
   Flush(PongAction)
   Unsubscribe(Int, @aqueue.Queue[Unit])
   DrainSubscription(Int, SubscriptionState)

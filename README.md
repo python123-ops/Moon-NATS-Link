@@ -74,7 +74,7 @@ TLS 不提供跳过验证的开关。`TlsOptions::new("nats.internal", ca_file="
 
 每个订阅最多积压 1024 条消息或 8 MiB 的消息体；HMSG 的原始 header block 也计入字节上限。超限的 SID 关闭为 `SlowConsumer`，writer 发送 `UNSUB` 并等待后续 `PONG` 再清理路由，其余 SID 不会被这个慢订阅卡住。
 
-`Client::flush` 将等待者排入 FIFO 队列后发送 `PING`，reader 收到相应的 `PONG` 才唤醒等待者。普通 `unsubscribe` 在调用时立即关闭本地投递，再由 writer 原子排入 `UNSUB + PING`；SID 暂留在路由表中吸收在途消息，后续 PONG 才把它移除。`Subscription::drain` 在 PONG 前仍接纳消息；消费者处理完最后一条消息，再由下一次 `next` 观察 `SubscriptionClosed` 并完成 drain。两种协议动作都由 writer/reader 持有，即使调用任务被取消也能完成 SID 收尾。
+订阅在写入前保存 subject、queue group 和可选消息上限。普通订阅由 writer 安装一条 SUB；request inbox 的 SUB 与 `UNSUB sid 1` 在同一个 writer 命令中连续写出，不允许并发发布插进两者之间。`Client::flush` 将等待者排入 FIFO 队列后发送 `PING`，reader 收到相应的 `PONG` 才唤醒等待者。普通 `unsubscribe` 在调用时立即关闭本地投递，再由 writer 原子排入 `UNSUB + PING`；SID 暂留在路由表中吸收在途消息，后续 PONG 才把它移除。`Subscription::drain` 在 PONG 前仍接纳消息；消费者处理完最后一条消息，再由下一次 `next` 观察 `SubscriptionClosed` 并完成 drain。两种协议动作都由 writer/reader 持有，即使调用任务被取消也能完成 SID 收尾。
 
 `Client::drain` 先禁止新订阅和 request，批量收束活跃 SID；这个阶段仍允许消费者发布最后的响应。所有消费者观察到邮箱关闭后进入发布收尾，再跨一次 PING/PONG 屏障并关闭所有客户端操作。由于客户端提供的是拉取式邮箱，仍有积压时需要另一个任务持续调用 `Subscription::next`，直到得到 `SubscriptionClosed`。
 
@@ -107,6 +107,8 @@ moon test src/client --target native --deny-warn --warn-list +73
 同日加入服务器池输入与复制语义测试后，native 客户端测试为 34 个。真实连接探针把未监听的 `127.0.0.1:4333` 放在首位、`nats-server v2.14.6` 放在第二位，二进制消息仍完成往返；把可用服务器放在首位并让回调主动失败时，回调计数保持为 1，原错误没有被第二次连接覆盖。
 
 继续处理 INFO 拓扑更新后，native 客户端测试增至 38 个。两个 `nats-server v2.14.6` 实例在 Ubuntu 24.04 WSL 中组成路由集群，客户端只配置 `127.0.0.1:14222`，握手后地址表实际得到服务器通告的 `127.0.0.1:14333`；测试结束后两台服务均停止且端口释放。
+
+订阅安装改由单条 writer 命令持有后，native 客户端测试增至 42 个；记录型 writer 测试观察到 request inbox 的 SUB 与 `UNSUB sid 1` 相邻写出，订阅状态测试确认 drain 中或已超限的 SID 不会生成恢复命令。随后在 Ubuntu 24.04 WSL 启动校验过 SHA-256 的 `nats-server v2.14.6`，请求应答示例再次完成 headers、503 No Responders 与 timeout 三条路径。
 
 ## License
 

@@ -21,7 +21,11 @@ fn client_for_routing_test(
 
 ///|
 fn attach_test_subscription(client : Client, sid : Int) -> Subscription {
-  let state = new_subscription_state(client.subscription_message_limit)
+  let state = new_subscription_state(client.subscription_message_limit, {
+    subject: "test.\{sid}",
+    queue_group: None,
+    max_messages: None,
+  })
   client.subscriptions[sid] = state
   { client, sid, state, }
 }
@@ -113,7 +117,8 @@ async test "flush reaches the writer as one ordered command" {
         route_frame(client, Pong)
         flush_task.wait()
       }
-      Flush(ForgetSubscription(_))
+      Subscribe(_, _, _)
+      | Flush(ForgetSubscription(_))
       | Flush(FinishSubscriptionDrain(_, _))
       | Unsubscribe(_, _)
       | DrainSubscription(_, _)

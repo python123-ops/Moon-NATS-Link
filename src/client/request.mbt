@@ -17,8 +17,7 @@ pub async fn Client::request(
   guard self.status is Open else { raise ConnectionClosed }
   validate_publish_subject(subject)
   let reply = self.next_inbox()
-  let subscription = self.subscribe(reply)
-  send(self, @wire.encode_unsubscribe(subscription.sid, max_messages=1))
+  let subscription = self.install_subscription(reply, max_messages=1)
   self.publish(subject, payload, reply_to=reply, headers?)
   let response = @async.with_timeout(
     self.request_timeout_ms,
