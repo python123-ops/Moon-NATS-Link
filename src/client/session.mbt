@@ -422,16 +422,12 @@ async fn[X, Connection : @io.Reader + @io.Writer] run_client(
 }
 
 ///|
-/// Open one scoped native connection. The callback runs only after INFO,
-/// CONNECT and the initial PING/PONG have completed. With TLS in traditional
-/// NATS mode, INFO is read before certificate negotiation; TLS-first performs
-/// certificate negotiation before any protocol bytes. Returning from the
-/// callback closes the writer and waits for the reader to terminate.
-pub async fn[X] with_client(
+async fn[X] with_server(
+  server : String,
   options : Options,
   block : async (Client) -> X,
 ) -> X {
-  let connection = @socket.Tcp::connect(@socket.Addr::parse(options.server))
+  let connection = @socket.Tcp::connect(@socket.Addr::parse(server))
   defer connection.close()
   match options.tls {
     None => {
@@ -453,5 +449,43 @@ pub async fn[X] with_client(
         defer secure.close()
         run_client(secure, decoder, options, block)
       }
+  }
+}
+
+///|
+/// Open one scoped native connection. Servers are attempted in their supplied
+/// order until INFO, CONNECT and the initial PING/PONG have completed. With TLS
+/// in traditional NATS mode, INFO is read before certificate negotiation;
+/// TLS-first performs certificate negotiation before any protocol bytes. Once
+/// the callback begins, its work is never replayed on another server.
+pub async fn[X] with_client(
+  options : Options,
+  block : async (Client) -> X,
+) -> X {
+  let last_error : Ref[Error?] = Ref(None)
+  for server in options.servers {
+    let entered_callback = Ref(false)
+    try
+      with_server(server, options, client => {
+        entered_callback.val = true
+        block(client)
+      })
+    catch {
+      error => {
+        if entered_callback.val || @async.is_being_cancelled() {
+          raise error
+        }
+        match error {
+          InboxEntropyUnavailable => raise error
+          _ => last_error.val = Some(error)
+        }
+      }
+    } noraise {
+      result => return result
+    }
+  }
+  match last_error.val {
+    Some(error) => raise error
+    None => raise InvalidServerList("server pool must not be empty")
   }
 }

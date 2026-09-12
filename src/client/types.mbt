@@ -6,6 +6,7 @@ pub(all) suberror ClientError {
   InvalidHeader(String)
   InvalidTimeout(Int)
   InvalidCredentials(String)
+  InvalidServerList(String)
   InvalidTlsConfiguration(String)
   ProtocolViolation(String)
   ConnectionClosed
@@ -22,7 +23,7 @@ pub(all) suberror ClientError {
 ///|
 /// Connection values used by `with_client` in the current native client.
 pub struct Options {
-  priv server : String
+  priv servers : Array[String]
   priv name : String
   priv request_timeout_ms : Int
   priv auth : @wire.ConnectAuth?
@@ -30,11 +31,13 @@ pub struct Options {
 }
 
 ///|
-/// Create connection options for a single Core NATS server.
+/// Create connection options for one Core NATS server or an ordered pool.
 /// `token` is mutually exclusive with `username` and `password`; the latter
-/// must be supplied as a pair. Credential values are never added to `server`.
+/// must be supplied as a pair. `server` preserves the single-address call
+/// shape and cannot be combined with `servers`.
 pub fn Options::new(
-  server? : String = "127.0.0.1:4222",
+  server? : String,
+  servers? : Array[String],
   name? : String = "moon-nats-link",
   request_timeout_ms? : Int = 2000,
   token? : String,
@@ -45,8 +48,9 @@ pub fn Options::new(
   if request_timeout_ms <= 0 {
     raise InvalidTimeout(request_timeout_ms)
   }
+  let servers = normalize_servers(server, servers)
   let auth = validate_credentials(token, username, password)
-  { server, name, request_timeout_ms, auth, tls, }
+  { servers, name, request_timeout_ms, auth, tls, }
 }
 
 ///|

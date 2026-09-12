@@ -16,4 +16,6 @@ request 为每次调用建立一个精确 inbox 订阅。inbox 前缀来自 12 �
 
 连接 drain 先把状态切到 `DrainingSubscriptions`，所以新的 SUB 和 request 会失败，但处理已收消息的任务仍可 PUB 回复。它为所有活跃 SID 共享一个服务器屏障，等各消费者观察到邮箱关闭后再切到 `DrainingPublishes`；第二个屏障确认最后的发布已经被服务器处理，此后所有公开操作返回 `ConnectionClosed`。
 
-`with_client` 是连接的所有者。回调正常返回时，它关闭仍存活的订阅邮箱，并让任务组携带回调结果立即收尾；阻塞在 socket read 的 reader 与等待邮箱的 writer 都会收到取消，随后连接句柄关闭。没有显式调用 `Client::drain` 时，这里仍执行作用域关闭，不伪装成一次协议 drain；但逃出回调的订阅句柄也不会再永久阻塞在 `next`。
+`with_client` 是连接的所有者。`Options::new` 先复制调用者给出的服务器地址，`with_client` 再按输入顺序尝试；TCP、TLS、INFO 或初始 PING/PONG 在回调交付前失败时，当前句柄先关闭，再尝试下一项。取消信号不会被这个循环吞掉，随机 inbox 前缀无法生成也不会靠换服务器重试。回调一旦收到 `Client`，它的返回值或错误只属于这一次连接，不会在后续地址上重放。
+
+回调正常返回时，`with_client` 关闭仍存活的订阅邮箱，并让任务组携带回调结果立即收尾；阻塞在 socket read 的 reader 与等待邮箱的 writer 都会收到取消，随后连接句柄关闭。没有显式调用 `Client::drain` 时，这里仍执行作用域关闭，不伪装成一次协议 drain；但逃出回调的订阅句柄也不会再永久阻塞在 `next`。
